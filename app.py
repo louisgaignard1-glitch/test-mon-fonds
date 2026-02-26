@@ -9,9 +9,6 @@ st.set_page_config(page_title="Portfolio vs Benchmark", layout="wide")
 
 st.title("📊 Portfolio vs Benchmark composite")
 
-# Convertir les clés du dictionnaire en liste pour éviter les problèmes de hash
-tickers = list(allocation.keys())
-
 # =====================
 # Allocation portefeuille
 # =====================
@@ -36,6 +33,9 @@ allocation = {
     "FR0011268705": 0.08
 }
 
+# Convertir les clés du dictionnaire en liste pour éviter les problèmes de hash
+tickers = list(allocation.keys())
+
 start = st.sidebar.date_input("Start date", datetime(2020,1,1))
 
 # =====================
@@ -43,7 +43,6 @@ start = st.sidebar.date_input("Start date", datetime(2020,1,1))
 # =====================
 @st.cache_data(ttl=3600)
 def load_prices(tickers, start):
-
     tickers = list(tickers)
     prices = pd.DataFrame()
 
@@ -66,7 +65,7 @@ def load_prices(tickers, start):
 
     return prices
 
-prices = load_prices(list(allocation.keys()), start)
+prices = load_prices(tickers, start)
 
 if prices.empty:
     st.error("Impossible de récupérer les prix")
@@ -87,7 +86,6 @@ portfolio_index = (1 + portfolio_returns).cumprod()
 # =====================
 @st.cache_data(ttl=3600)
 def load_benchmark_composite(start):
-
     benchmark_weights = {
         "EXSA.DE": 0.35,
         "SPY": 0.20,
@@ -119,12 +117,12 @@ st.subheader("📊 Composition du benchmark")
 st.markdown("""
 Le benchmark composite reflète la structure multi-actifs du portefeuille :
 
-• 35% STOXX Europe 600 → actions européennes  
-• 20% S&P 500 → actions américaines  
-• 25% Bloomberg Global Aggregate → obligations globales  
-• 10% FTSE EPRA NAREIT Europe → immobilier coté  
-• 5% MSCI Emerging Markets → actions émergentes  
-• 5% Cash proxy → liquidités  
+• 35% STOXX Europe 600 → actions européennes
+• 20% S&P 500 → actions américaines
+• 25% Bloomberg Global Aggregate → obligations globales
+• 10% FTSE EPRA NAREIT Europe → immobilier coté
+• 5% MSCI Emerging Markets → actions émergentes
+• 5% Cash proxy → liquidités
 
 Ce benchmark permet une comparaison plus réaliste qu’un indice actions pur.
 """)
