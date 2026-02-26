@@ -83,13 +83,14 @@ portfolio_index = (1 + portfolio_returns).cumprod()
 @st.cache_data(ttl=3600)
 def load_benchmark_composite(start):
     benchmark_weights = {
-        "EXSA.DE": 0.35,
-        "SPY": 0.20,
-        "AGGG.L": 0.25,
-        "EPRE.AS": 0.10,
-        "EEM": 0.05,
-        "EUR=X": 0.05
-    }
+    "EXSA.DE": 0.35,  # STOXX Europe 600
+    "SPY": 0.20,      # S&P 500
+    "AGG": 0.25,      # Bloomberg US Aggregate Bond (remplace AGGG.L)
+    "EPRE.AS": 0.10,  # FTSE EPRA NAREIT Europe
+    "EEM": 0.05,      # MSCI Emerging Markets
+    # Supprime "EUR=X" ou remplace par un actif liquide (ex: "BIL" pour les liquidités US)
+}
+
 
     prices = yf.download(list(benchmark_weights.keys()), start=start)["Adj Close"]
     prices = prices.fillna(method="ffill")
