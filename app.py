@@ -86,34 +86,48 @@ portfolio_returns = (returns * weights).sum(axis=1)
 portfolio_index = (1 + portfolio_returns).cumprod()
 
 # =====================
-# Hedge FX USD via forwards (simulation)
+# Hedge FX USD via forwards (simulation robuste)
 # =====================
 usd_tickers = ["UBER", "GOOGL", "META", "HWM", "AMZN"]
 
+# téléchargement FX
 fx = yf.download("EURUSD=X", start=start, auto_adjust=True)
+
+hedged_returns = returns.copy()
 
 if not fx.empty:
 
-    # récupérer série FX
-    fx_series = fx["Close"] if "Close" in fx.columns else fx.iloc[:, 0]
+    # S'assurer qu'on récupère une vraie Series
+    if isinstance(fx, pd.DataFrame):
+        fx_series = fx.iloc[:, 0]
+    else:
+        fx_series = fx
 
-    # alignement STRICT sur dates portefeuille
-    fx_series = fx_series.reindex(returns.index).ffill().bfill()
+    # Forcer index datetime
+    fx_series.index = pd.to_datetime(fx_series.index)
+    returns.index = pd.to_datetime(returns.index)
 
-    # calcul returns FX
-    fx_returns = fx_series.pct_change().fillna(0)
+    # Alignement STRICT sur index portefeuille
+    fx_series = fx_series.reindex(returns.index)
 
-    hedged_returns = returns.copy()
+    # Remplissage sécurisé
+    fx_series = fx_series.ffill().bfill()
 
-    # hedge ticker par ticker avec alignement explicite
+    # Calcul return FX
+    fx_returns = fx_series.pct_change()
+    fx_returns = fx_returns.fillna(0)
+
+    # Conversion explicite en numpy array (anti bug pandas 3.13)
+    fx_array = fx_returns.to_numpy()
+
+    # Hedge ticker par ticker
     for t in usd_tickers:
         if t in hedged_returns.columns:
-            hedged_returns.loc[:, t] = (
-                hedged_returns[t].sub(fx_returns, fill_value=0)
-            )
+            hedged_returns[t] = hedged_returns[t].to_numpy() - fx_array
 
-else:
-    hedged_returns = returns.copy()
+# NAV hedgée
+portfolio_returns_hedged = (hedged_returns * weights).sum(axis=1)
+portfolio_index_hedged = (1 + portfolio_returns_hedged).cumprod()
 # =====================
 # Benchmark composite
 # =====================
