@@ -90,38 +90,41 @@ portfolio_index = (1 + portfolio_returns).cumprod()
 @st.cache_data(ttl=3600)
 def load_benchmark_composite(start):
     benchmark_weights = {
-        "EXSA.DE": 0.35,
-        "SPY": 0.20,
-        "AGG": 0.25,
-        "EPRE.AS": 0.10,
-        "EEM": 0.05,
-        "BIL": 0.05
+        "EXSA.DE": 0.35,  # STOXX Europe 600
+        "SPY": 0.20,      # S&P 500
+        "TLT": 0.25,      # Obligations américaines à long terme (remplace AGG)
+        "VNQ": 0.10,      # Immobilier américain (remplace EPRE.AS)
+        "EEM": 0.05,      # MSCI Emerging Markets
+        "^IRX": 0.05      # Taux des liquidités (remplace BIL)
     }
 
     try:
         prices = yf.download(list(benchmark_weights.keys()), start=start)["Adj Close"]
+
         if prices.empty:
             st.error("Aucune donnée disponible pour le benchmark. Vérifiez les tickers ou la date.")
-            return pd.Series([1.0], index=[pd.to_datetime("today")])  # Retourne une série par défaut
+            return pd.Series([1.0], index=[pd.to_datetime("today")])
+
+        st.write("Données du benchmark :", prices)  # Affiche les données pour vérification
 
         prices = prices.fillna(method="ffill")
         weights = pd.Series(benchmark_weights)
+
         returns = prices.pct_change().fillna(0)
+        st.write("Rendements :", returns)  # Affiche les rendements pour vérification
+
         bench_returns = (returns * weights).sum(axis=1)
+        st.write("Rendements pondérés :", bench_returns)  # Affiche les rendements pondérés
+
         bench_index = (1 + bench_returns).cumprod()
+        st.write("Indice du benchmark :", bench_index)  # Affiche l'indice final
 
         return bench_index
 
     except Exception as e:
         st.error(f"Erreur lors du chargement du benchmark : {e}")
-        return pd.Series([1.0], index=[pd.to_datetime("today")])  # Retourne une série par défaut
+        return pd.Series([1.0], index=[pd.to_datetime("today")])
 
-bench_index = load_benchmark_composite(start)
-
-# Vérifie que bench_index est valide
-if bench_index is None or bench_index.empty:
-    st.error("Erreur : Impossible de calculer le benchmark. Vérifiez les données.")
-    st.stop()
 
 # =====================
 # Texte explicatif benchmark
