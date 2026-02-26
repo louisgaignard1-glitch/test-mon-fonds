@@ -9,6 +9,9 @@ st.set_page_config(page_title="Portfolio vs Benchmark", layout="wide")
 
 st.title("📊 Portfolio vs Benchmark composite")
 
+# Convertir les clés du dictionnaire en liste pour éviter les problèmes de hash
+tickers = list(allocation.keys())
+
 # =====================
 # Allocation portefeuille
 # =====================
