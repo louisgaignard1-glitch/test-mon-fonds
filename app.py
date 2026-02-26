@@ -83,28 +83,34 @@ portfolio_index = (1 + portfolio_returns).cumprod()
 @st.cache_data(ttl=3600)
 def load_benchmark_composite(start):
     benchmark_weights = {
-    "EXSA.DE": 0.35,  # STOXX Europe 600
-    "SPY": 0.20,      # S&P 500
-    "AGG": 0.25,      # Bloomberg US Aggregate Bond (remplace AGGG.L)
-    "EPRE.AS": 0.10,  # FTSE EPRA NAREIT Europe
-    "EEM": 0.05,      # MSCI Emerging Markets
-    # Supprime "EUR=X" ou remplace par un actif liquide (ex: "BIL" pour les liquidités US)
-}
-
+        "EXSA.DE": 0.35,  # STOXX Europe 600
+        "SPY": 0.20,      # S&P 500
+        "AGG": 0.25,      # Bloomberg US Aggregate Bond
+        "EPRE.AS": 0.10,  # FTSE EPRA NAREIT Europe
+        "EEM": 0.05,      # MSCI Emerging Markets
+        "BIL": 0.05       # Liquidités (remplace EUR=X)
+    }
 
     prices = yf.download(list(benchmark_weights.keys()), start=start)["Adj Close"]
-    prices = prices.fillna(method="ffill")
+    st.write("Prix du benchmark :", prices)  # Debug
 
+    if prices.empty:
+        st.error("Aucune donnée disponible pour le benchmark.")
+        return pd.Series([1], index=[start])  # Retourne une série constante pour éviter les erreurs
+
+    prices = prices.fillna(method="ffill")
     weights = pd.Series(benchmark_weights)
 
     returns = prices.pct_change().fillna(0)
-    bench_returns = (returns * weights).sum(axis=1)
+    st.write("Rendements du benchmark :", returns)  # Debug
 
+    bench_returns = (returns * weights).sum(axis=1)
     bench_index = (1 + bench_returns).cumprod()
+
+    st.write("Indice du benchmark :", bench_index)  # Debug
 
     return bench_index
 
-bench_index = load_benchmark_composite(start)
 
 # =====================
 # Texte explicatif benchmark
