@@ -89,11 +89,11 @@ portfolio_index = (1 + portfolio_returns).cumprod()
 @st.cache_data(ttl=3600)
 def load_benchmark_composite(start):
     benchmark_weights = {
-        "EXSA.DE": 0.35,  # STOXX Europe 600
-        "SPY": 0.20,      # S&P 500
-        "TLT": 0.25,      # Obligations américaines à long terme
-        "VNQ": 0.10,      # Immobilier américain
-        "EEM": 0.05,      # MSCI Emerging Markets
+        "SXXP": 0.35,    # STOXX Europe 600
+        "SPY": 0.20,     # S&P 500
+        "TLT": 0.25,     # Obligations américaines à long terme
+        "VNQ": 0.10,     # Immobilier américain
+        "EEM": 0.05,     # MSCI Emerging Markets
     }
 
     try:
@@ -113,6 +113,8 @@ def load_benchmark_composite(start):
                     prices[ticker] = ticker_data["Close"]
                 else:
                     st.warning(f"Aucune colonne 'Adj Close' ou 'Close' trouvée pour {ticker}")
+            else:
+                st.warning(f"Aucune donnée trouvée pour {ticker}")
 
         if prices.empty:
             st.error("Aucune donnée disponible pour le benchmark. Vérifiez les tickers ou la date.")
@@ -136,15 +138,8 @@ def load_benchmark_composite(start):
 
     except Exception as e:
         st.error(f"Erreur lors du chargement du benchmark : {e}")
+        return pd.Series([1.0], index=[pd.to_datetime("today")])
 
-
-# Charge les données du benchmark
-bench_index = load_benchmark_composite(start)
-
-# Vérifie que bench_index est valide
-if bench_index is None or bench_index.empty:
-    st.error("Erreur : Impossible de calculer le benchmark. Vérifiez les données.")
-    st.stop()
 
 # =====================
 # Texte explicatif benchmark
