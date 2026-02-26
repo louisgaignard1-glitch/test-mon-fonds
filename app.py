@@ -3,7 +3,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from datetime import datetime
+from datetime import datetime, timedelta
 
 st.set_page_config(page_title="Portfolio vs Benchmark", layout="wide")
 
@@ -80,9 +80,37 @@ weights = pd.Series(allocation)
 weights = weights[weights.index.isin(prices.columns)]
 
 returns = prices.pct_change().fillna(0)
+
+# NAV non hedgée
 portfolio_returns = (returns * weights).sum(axis=1)
 portfolio_index = (1 + portfolio_returns).cumprod()
 
+# =====================
+# Hedge FX USD via forwards (simulation)
+# =====================
+usd_tickers = ["UBER", "GOOGL", "META", "HWM", "AMZN"]
+
+fx = yf.download("EURUSD=X", start=start)
+
+if not fx.empty:
+    if "Adj Close" in fx.columns:
+        fx_series = fx["Adj Close"]
+    else:
+        fx_series = fx["Close"]
+
+    fx_series = fx_series.reindex(returns.index).fillna(method="ffill")
+    fx_returns = fx_series.pct_change().fillna(0)
+
+    hedged_returns = returns.copy()
+
+    for t in usd_tickers:
+        if t in hedged_returns.columns:
+            hedged_returns[t] = hedged_returns[t] - fx_returns
+else:
+    hedged_returns = returns.copy()
+
+portfolio_returns_hedged = (hedged_returns * weights).sum(axis=1)
+portfolio_index_hedged = (1 + portfolio_returns_hedged).cumprod()
 # =====================
 # Benchmark composite
 # =====================
@@ -117,7 +145,7 @@ def load_benchmark_composite(start):
             st.error("Aucune donnée disponible pour le benchmark. Vérifiez les tickers ou la date.")
             return pd.Series([1.0], index=[pd.to_datetime("today")])
 
-        prices = prices.fillna(method="ffill")  # Parentheses corrigées
+        prices = prices.fillna(method="ffill")
         weights = pd.Series(benchmark_weights)
 
         returns = prices.pct_change().fillna(0)
@@ -156,7 +184,12 @@ fig.add_trace(go.Scatter(
     name="Benchmark composite",
     line=dict(width=3)  # Ligne continue
 ))
-
+fig.add_trace(go.Scatter(
+    x=portfolio_index_hedged.index,
+    y=portfolio_index_hedged,
+    name="Portfolio hedgé USD",
+    line=dict(width=3, dash="dot")
+))
 fig.update_layout(
     height=600,
     template="plotly_white",
@@ -181,19 +214,75 @@ Le benchmark composite reflète la structure multi-actifs du portefeuille :
 
 Ce benchmark permet une comparaison plus réaliste qu’un indice actions pur.
 """)
+st.subheader("💱 Couverture FX USD")
 
-# Affichage des données du benchmark
-st.subheader("📉 Données du benchmark")
-st.write("Données du benchmark :", bench_index)
+st.markdown("""
+Une simulation de couverture du risque dollar est appliquée via des contrats à terme FX (forwards).
+
+Les actions américaines sont couvertes en neutralisant la variation EUR/USD :
+
+Return hedgé ≈ Return action USD − Return EURUSD
+
+Cette approche simule un hedge forward à 100% sans coût de carry.
+""")
+# =====================
+# Calcul des performances
+# =====================
+
+# Fonction pour calculer la performance sur une période donnée
+def calculate_performance(index_series, days):
+    if len(index_series) < 2:
+        return 0.0
+    if days == 1:  # Performance de la veille
+        if len(index_series) >= 2:
+            return (index_series.iloc[-1] / index_series.iloc[-2] - 1) * 100
+        else:
+            return 0.0
+    else:
+        start_date = index_series.index[-1] - timedelta(days=days)
+        if start_date < index_series.index[0]:
+            start_date = index_series.index[0]
+        start_value = index_series[index_series.index >= start_date].iloc[0]
+        end_value = index_series.iloc[-1]
+        return (end_value / start_value - 1) * 100
+
+# Calcul des performances pour le portefeuille
+portfolio_perf_yesterday = calculate_performance(portfolio_index, 1)
+portfolio_perf_1y = calculate_performance(portfolio_index, 365)
+portfolio_perf_3y = calculate_performance(portfolio_index, 3*365)
+
+# Calcul des performances pour le benchmark
+benchmark_perf_yesterday = calculate_performance(bench_index, 1)
+benchmark_perf_1y = calculate_performance(bench_index, 365)
+benchmark_perf_3y = calculate_performance(bench_index, 3*365)
 
 # =====================
-# Metrics
+# Affichage des performances
 # =====================
-st.subheader("📈 Statistiques")
+st.subheader("📈 Performances")
 
 col1, col2 = st.columns(2)
 
-col1.metric("Perf portefeuille", f"{(portfolio_index.iloc[-1]-1)*100:.2f}%")
-col2.metric("Perf benchmark", f"{(bench_index.iloc[-1]-1)*100:.2f}%")
+with col1:
+    st.markdown("**Portefeuille**")
+    st.metric("Perf de la veille", f"{portfolio_perf_yesterday:.2f}%")
+    st.metric("Perf sur 1 an", f"{portfolio_perf_1y:.2f}%")
+    st.metric("Perf sur 3 ans", f"{portfolio_perf_3y:.2f}%")
+
+with col2:
+    st.markdown("**Benchmark**")
+    st.metric("Perf de la veille", f"{benchmark_perf_yesterday:.2f}%")
+    st.metric("Perf sur 1 an", f"{benchmark_perf_1y:.2f}%")
+    st.metric("Perf sur 3 ans", f"{benchmark_perf_3y:.2f}%")
+
+# =====================
+# Metrics globales
+# =====================
+st.subheader("📊 Statistiques globales")
+
+col1, col2 = st.columns(2)
+
+col1.metric("Perf portefeuille (depuis début)", f"{(portfolio_index.iloc[-1]-1)*100:.2f}%")
+col2.metric("Perf benchmark (depuis début)", f"{(bench_index.iloc[-1]-1)*100:.2f}%")
 
 st.caption("Mise à jour automatique toutes les heures")
