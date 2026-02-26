@@ -83,33 +83,32 @@ portfolio_index = (1 + portfolio_returns).cumprod()
 @st.cache_data(ttl=3600)
 def load_benchmark_composite(start):
     benchmark_weights = {
-        "EXSA.DE": 0.35,  # STOXX Europe 600
-        "SPY": 0.20,      # S&P 500
-        "AGG": 0.25,      # Bloomberg US Aggregate Bond
-        "EPRE.AS": 0.10,  # FTSE EPRA NAREIT Europe
-        "EEM": 0.05,      # MSCI Emerging Markets
-        "BIL": 0.05       # Liquidités (remplace EUR=X)
+        "EXSA.DE": 0.35,
+        "SPY": 0.20,
+        "AGG": 0.25,
+        "EPRE.AS": 0.10,
+        "EEM": 0.05,
+        "BIL": 0.05
     }
 
-    prices = yf.download(list(benchmark_weights.keys()), start=start)["Adj Close"]
-    st.write("Prix du benchmark :", prices)  # Debug
+    try:
+        prices = yf.download(list(benchmark_weights.keys()), start=start)["Adj Close"]
+        if prices.empty:
+            st.error("Aucune donnée disponible pour le benchmark. Vérifiez les tickers ou la date.")
+            return pd.Series([1.0], index=[pd.to_datetime("today")])  # Retourne une série par défaut
 
-    if prices.empty:
-        st.error("Aucune donnée disponible pour le benchmark.")
-        return pd.Series([1], index=[start])  # Retourne une série constante pour éviter les erreurs
+        prices = prices.fillna(method="ffill")
+        weights = pd.Series(benchmark_weights)
+        returns = prices.pct_change().fillna(0)
+        bench_returns = (returns * weights).sum(axis=1)
+        bench_index = (1 + bench_returns).cumprod()
 
-    prices = prices.fillna(method="ffill")
-    weights = pd.Series(benchmark_weights)
+        return bench_index
 
-    returns = prices.pct_change().fillna(0)
-    st.write("Rendements du benchmark :", returns)  # Debug
+    except Exception as e:
+        st.error(f"Erreur lors du chargement du benchmark : {e}")
+        return pd.Series([1.0], index=[pd.to_datetime("today")])  # Retourne une série par défaut
 
-    bench_returns = (returns * weights).sum(axis=1)
-    bench_index = (1 + bench_returns).cumprod()
-
-    st.write("Indice du benchmark :", bench_index)  # Debug
-
-    return bench_index
 
 
 # =====================
