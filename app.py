@@ -97,24 +97,21 @@ def load_benchmark_composite(start):
     }
 
     try:
-        # Télécharge les données pour tous les tickers
-        data = yf.download(list(benchmark_weights.keys()), start=start)
-
-        # Crée un DataFrame vide pour stocker les prix
         prices = pd.DataFrame()
-
-        # Pour chaque ticker, vérifie la présence des colonnes "Adj Close" ou "Close"
-        for ticker in benchmark_weights.keys():
-            if ticker in data.columns.levels[1]:
-                ticker_data = data[ticker]
-                if "Adj Close" in ticker_data.columns:
-                    prices[ticker] = ticker_data["Adj Close"]
-                elif "Close" in ticker_data.columns:
-                    prices[ticker] = ticker_data["Close"]
+        for ticker, weight in benchmark_weights.items():
+            try:
+                tmp = yf.download(ticker, start=start)
+                if not tmp.empty:
+                    if "Adj Close" in tmp.columns:
+                        prices[ticker] = tmp["Adj Close"]
+                    elif "Close" in tmp.columns:
+                        prices[ticker] = tmp["Close"]
+                    else:
+                        st.warning(f"Aucune colonne 'Adj Close' ou 'Close' trouvée pour {ticker}")
                 else:
-                    st.warning(f"Aucune colonne 'Adj Close' ou 'Close' trouvée pour {ticker}")
-            else:
-                st.warning(f"Aucune donnée trouvée pour {ticker}")
+                    st.warning(f"Aucune donnée trouvée pour {ticker}")
+            except Exception as e:
+                st.warning(f"Erreur lors du téléchargement des données pour {ticker}: {e}")
 
         if prices.empty:
             st.error("Aucune donnée disponible pour le benchmark. Vérifiez les tickers ou la date.")
@@ -140,6 +137,13 @@ def load_benchmark_composite(start):
         st.error(f"Erreur lors du chargement du benchmark : {e}")
         return pd.Series([1.0], index=[pd.to_datetime("today")])
 
+# Charge les données du benchmark
+bench_index = load_benchmark_composite(start)
+
+# Vérifie que bench_index est valide
+if bench_index is None or bench_index.empty or not hasattr(bench_index, 'index'):
+    st.error("Erreur : Impossible de calculer le benchmark. Vérifiez les données.")
+    st.stop()
 
 # =====================
 # Texte explicatif benchmark
