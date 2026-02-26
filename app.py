@@ -90,27 +90,30 @@ portfolio_index = (1 + portfolio_returns).cumprod()
 # =====================
 usd_tickers = ["UBER", "GOOGL", "META", "HWM", "AMZN"]
 
-fx = yf.download("EURUSD=X", start=start)
+fx = yf.download("EURUSD=X", start=start, auto_adjust=True)
 
 if not fx.empty:
-    if "Adj Close" in fx.columns:
-        fx_series = fx["Adj Close"]
-    else:
-        fx_series = fx["Close"]
 
-    fx_series = fx_series.reindex(returns.index).fillna(method="ffill")
+    # récupérer série FX
+    fx_series = fx["Close"] if "Close" in fx.columns else fx.iloc[:, 0]
+
+    # alignement STRICT sur dates portefeuille
+    fx_series = fx_series.reindex(returns.index).ffill().bfill()
+
+    # calcul returns FX
     fx_returns = fx_series.pct_change().fillna(0)
 
     hedged_returns = returns.copy()
 
+    # hedge ticker par ticker avec alignement explicite
     for t in usd_tickers:
         if t in hedged_returns.columns:
-            hedged_returns[t] = hedged_returns[t] - fx_returns
+            hedged_returns.loc[:, t] = (
+                hedged_returns[t].sub(fx_returns, fill_value=0)
+            )
+
 else:
     hedged_returns = returns.copy()
-
-portfolio_returns_hedged = (hedged_returns * weights).sum(axis=1)
-portfolio_index_hedged = (1 + portfolio_returns_hedged).cumprod()
 # =====================
 # Benchmark composite
 # =====================
