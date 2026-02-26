@@ -36,7 +36,7 @@ allocation = {
 # Convertir les clés du dictionnaire en liste pour éviter les problèmes de hash
 tickers = list(allocation.keys())
 
-start = st.sidebar.date_input("Start date", datetime(2020,1,1))
+start = st.sidebar.date_input("Start date", datetime(2020, 1, 1))
 
 # =====================
 # Chargement prix
@@ -44,6 +44,7 @@ start = st.sidebar.date_input("Start date", datetime(2020,1,1))
 @st.cache_data(ttl=3600)
 def load_prices(tickers, start):
     prices = pd.DataFrame()
+    failed_tickers = []
 
     for t in tickers:
         try:
@@ -55,8 +56,15 @@ def load_prices(tickers, start):
                     prices[t] = tmp["Close"]
                 else:
                     st.write(f"Aucune colonne 'Adj Close' ou 'Close' trouvée pour {t}")
+                    failed_tickers.append(t)
+            else:
+                failed_tickers.append(t)
         except Exception as e:
             st.write(f"Erreur lors du téléchargement des données pour {t}: {e}")
+            failed_tickers.append(t)
+
+    if failed_tickers:
+        st.warning(f"Impossible de récupérer les prix pour : {', '.join(failed_tickers)}")
 
     return prices
 
@@ -65,7 +73,6 @@ prices = load_prices(tickers, start)
 if prices.empty:
     st.error("Aucune donnée de prix n'a pu être téléchargée. Vérifiez les tickers ou votre connexion Internet.")
     st.stop()
-
 
 # =====================
 # Construction portefeuille
@@ -109,7 +116,12 @@ def load_benchmark_composite(start):
         st.error(f"Erreur lors du chargement du benchmark : {e}")
         return pd.Series([1.0], index=[pd.to_datetime("today")])  # Retourne une série par défaut
 
+bench_index = load_benchmark_composite(start)
 
+# Vérifie que bench_index est valide
+if bench_index is None or bench_index.empty:
+    st.error("Erreur : Impossible de calculer le benchmark. Vérifiez les données.")
+    st.stop()
 
 # =====================
 # Texte explicatif benchmark
