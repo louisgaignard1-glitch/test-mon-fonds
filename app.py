@@ -97,7 +97,22 @@ def load_benchmark_composite(start):
     }
 
     try:
-        prices = yf.download(list(benchmark_weights.keys()), start=start)["Adj Close"]
+        # Télécharge les données pour tous les tickers
+        data = yf.download(list(benchmark_weights.keys()), start=start)
+
+        # Crée un DataFrame vide pour stocker les prix
+        prices = pd.DataFrame()
+
+        # Pour chaque ticker, vérifie la présence des colonnes "Adj Close" ou "Close"
+        for ticker in benchmark_weights.keys():
+            if ticker in data.columns.levels[1]:
+                ticker_data = data[ticker]
+                if "Adj Close" in ticker_data.columns:
+                    prices[ticker] = ticker_data["Adj Close"]
+                elif "Close" in ticker_data.columns:
+                    prices[ticker] = ticker_data["Close"]
+                else:
+                    st.warning(f"Aucune colonne 'Adj Close' ou 'Close' trouvée pour {ticker}")
 
         if prices.empty:
             st.error("Aucune donnée disponible pour le benchmark. Vérifiez les tickers ou la date.")
@@ -121,7 +136,7 @@ def load_benchmark_composite(start):
 
     except Exception as e:
         st.error(f"Erreur lors du chargement du benchmark : {e}")
-        return pd.Series([1.0], index=[pd.to_datetime("today")])
+
 
 # Charge les données du benchmark
 bench_index = load_benchmark_composite(start)
