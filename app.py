@@ -89,7 +89,7 @@ portfolio_index = (1 + portfolio_returns).cumprod()
 @st.cache_data(ttl=3600)
 def load_benchmark_composite(start):
     benchmark_weights = {
-        "SXXP": 0.35,    # STOXX Europe 600
+        "IEV": 0.35,    # ETF MSCI Europe Index (alternative à STOXX Europe 600)
         "SPY": 0.20,     # S&P 500
         "TLT": 0.25,     # Obligations américaines à long terme
         "VNQ": 0.10,     # Immobilier américain
@@ -153,7 +153,7 @@ st.subheader("📊 Composition du benchmark")
 st.markdown("""
 Le benchmark composite reflète la structure multi-actifs du portefeuille :
 
-• 35% STOXX Europe 600 → actions européennes
+• 35% MSCI Europe Index (IEV) → actions européennes
 • 20% S&P 500 → actions américaines
 • 25% Obligations américaines à long terme → obligations
 • 10% Immobilier américain → immobilier
