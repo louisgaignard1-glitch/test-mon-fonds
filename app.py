@@ -117,4 +117,83 @@ def load_benchmark_composite(start):
             st.error("Aucune donnée disponible pour le benchmark. Vérifiez les tickers ou la date.")
             return pd.Series([1.0], index=[pd.to_datetime("today")])
 
-        prices = prices.fillna(method="ffill
+        prices = prices.fillna(method="ffill")  # Parentheses corrigées
+        weights = pd.Series(benchmark_weights)
+
+        returns = prices.pct_change().fillna(0)
+        bench_returns = (returns * weights).sum(axis=1)
+        bench_index = (1 + bench_returns).cumprod()
+
+        return bench_index
+
+    except Exception as e:
+        st.error(f"Erreur lors du chargement du benchmark : {e}")
+        return pd.Series([1.0], index=[pd.to_datetime("today")])
+
+# Charge les données du benchmark
+bench_index = load_benchmark_composite(start)
+
+# Vérifie que bench_index est valide
+if bench_index is None or bench_index.empty or not hasattr(bench_index, 'index'):
+    st.error("Erreur : Impossible de calculer le benchmark. Vérifiez les données.")
+    st.stop()
+
+# =====================
+# Graphique
+# =====================
+fig = go.Figure()
+
+fig.add_trace(go.Scatter(
+    x=portfolio_index.index,
+    y=portfolio_index,
+    name="Portfolio",
+    line=dict(width=3)
+))
+
+fig.add_trace(go.Scatter(
+    x=bench_index.index,
+    y=bench_index,
+    name="Benchmark composite",
+    line=dict(width=3)  # Ligne continue
+))
+
+fig.update_layout(
+    height=600,
+    template="plotly_white",
+    title="Performance cumulée"
+)
+
+st.plotly_chart(fig, use_container_width=True)
+
+# =====================
+# Texte explicatif benchmark
+# =====================
+st.subheader("📊 Composition du benchmark")
+
+st.markdown("""
+Le benchmark composite reflète la structure multi-actifs du portefeuille :
+
+• 35% MSCI Europe Index (IEV) → actions européennes
+• 20% S&P 500 → actions américaines
+• 25% Obligations américaines à long terme → obligations
+• 10% Immobilier américain → immobilier
+• 5% MSCI Emerging Markets → actions émergentes
+
+Ce benchmark permet une comparaison plus réaliste qu’un indice actions pur.
+""")
+
+# Affichage des données du benchmark
+st.subheader("📉 Données du benchmark")
+st.write("Données du benchmark :", bench_index)
+
+# =====================
+# Metrics
+# =====================
+st.subheader("📈 Statistiques")
+
+col1, col2 = st.columns(2)
+
+col1.metric("Perf portefeuille", f"{(portfolio_index.iloc[-1]-1)*100:.2f}%")
+col2.metric("Perf benchmark", f"{(bench_index.iloc[-1]-1)*100:.2f}%")
+
+st.caption("Mise à jour automatique toutes les heures")
