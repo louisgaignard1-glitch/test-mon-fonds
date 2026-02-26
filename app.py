@@ -43,33 +43,29 @@ start = st.sidebar.date_input("Start date", datetime(2020,1,1))
 # =====================
 @st.cache_data(ttl=3600)
 def load_prices(tickers, start):
-    tickers = list(tickers)
     prices = pd.DataFrame()
 
     for t in tickers:
         try:
-            tmp = yf.download(t, start=start)["Adj Close"]
+            tmp = yf.download(t, start=start)
             if not tmp.empty:
-                prices[t] = tmp
-        except:
-            pass
-
-    try:
-        override = pd.read_csv("prices_override.csv", index_col=0, parse_dates=True)
-        prices = prices.combine_first(override)
-    except:
-        pass
-
-    prices = prices.fillna(method="ffill")
-    prices = prices.dropna(how="all", axis=1)
+                if "Adj Close" in tmp.columns:
+                    prices[t] = tmp["Adj Close"]
+                elif "Close" in tmp.columns:
+                    prices[t] = tmp["Close"]
+                else:
+                    st.write(f"Aucune colonne 'Adj Close' ou 'Close' trouvée pour {t}")
+        except Exception as e:
+            st.write(f"Erreur lors du téléchargement des données pour {t}: {e}")
 
     return prices
 
 prices = load_prices(tickers, start)
 
 if prices.empty:
-    st.error("Impossible de récupérer les prix")
+    st.error("Aucune donnée de prix n'a pu être téléchargée. Vérifiez les tickers ou votre connexion Internet.")
     st.stop()
+
 
 # =====================
 # Construction portefeuille
