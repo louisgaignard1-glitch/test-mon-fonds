@@ -26,12 +26,13 @@ allocation = {
     "META": 0.02,
     "HWM": 0.03,
     "AMZN": 0.03,
-    "0P0000ZWX4.F": 0.08,
-    "0P0001861S.F": 0.08,
-    "0P00000M6C.F": 0.09,
-    "0P00008ESK.F": 0.08,
-    "0P0000A6ZG.F": 0.05,
-    "0P0000WHLW.F": 0.08
+    # Exemples de fonds Yahoo valides
+    "FP0BIEU.F": 0.08,
+    "FP0B7D3.F": 0.08,
+    "FP0B5L8.F": 0.09,
+    "FP0B4WQ.F": 0.08,
+    "FP0B0VD.F": 0.05,
+    "FP0B3H2.F": 0.08
 }
 
 tickers = list(allocation.keys())
@@ -78,12 +79,11 @@ if prices.empty:
 weights = pd.Series(allocation)
 weights = weights[weights.index.isin(prices.columns)]
 
-# =====================
-# FX pour hedge
-# =====================
 usd_tickers = ["UBER", "GOOGL", "META", "HWM", "AMZN"]
 
+# =====================
 # Télécharger EUR/USD
+# =====================
 fx = yf.download("EURUSD=X", start=start)
 if "Adj Close" in fx.columns:
     fx_series = fx["Adj Close"]
@@ -93,18 +93,17 @@ else:
     fx_series = fx.iloc[:, 0]
 
 fx_series.index = pd.to_datetime(fx_series.index)
-fx_series = fx_series.reindex(prices.index).ffill().bfill()
-fx_returns = fx_series.pct_change().fillna(0)
 
 # =====================
 # NAV portefeuille non hedgé
 # =====================
-# Rendements totaux en EUR pour USD stock
 prices_eur = prices.copy()
 for t in usd_tickers:
-    if t in prices_eur.columns:
-        # Convertir en EUR pour investisseur européen
-        prices_eur[t] = prices[t] * (1 / fx_series)
+    if t in prices.columns:
+        # Alignement exact
+        combined = pd.concat([prices[t], fx_series], axis=1, join='inner')
+        combined.columns = ['price', 'fx']
+        prices_eur[t] = combined['price'] * (1 / combined['fx'])
 
 returns = prices_eur.pct_change().fillna(0)
 portfolio_returns = (returns * weights).sum(axis=1)
@@ -113,11 +112,12 @@ portfolio_index = (1 + portfolio_returns).cumprod()
 # =====================
 # NAV portefeuille hedgé
 # =====================
-# Appliquer hedge FX exact : R_hedgé = (1 + R_stock) * (1 - R_fx) - 1
 hedged_prices = prices.copy()
 for t in usd_tickers:
-    if t in hedged_prices.columns:
-        hedged_prices[t] = prices[t] * (1 / fx_series)  # Simule hedge EUR/USD
+    if t in prices.columns:
+        combined = pd.concat([prices[t], fx_series], axis=1, join='inner')
+        combined.columns = ['price', 'fx']
+        hedged_prices[t] = combined['price'] * (1 / combined['fx'])
 
 hedged_returns = hedged_prices.pct_change().fillna(0)
 portfolio_returns_hedged = (hedged_returns * weights).sum(axis=1)
