@@ -99,16 +99,13 @@ hedged_prices = prices.copy()
 for t in usd_tickers:
     if t in prices.columns:
         combined = pd.concat([prices[t], fx_series], axis=1, join='outer').ffill()
-        prices_eur[t] = combined['price'] * (1 / combined['fx'])
-        hedged_prices[t] = combined['price']
-
-returns = prices_eur.pct_change().fillna(0)
-portfolio_returns = (returns * weights).sum(axis=1)
-portfolio_index = (1 + portfolio_returns).cumprod()
-
-hedged_returns = hedged_prices.pct_change().fillna(0)
-portfolio_returns_hedged = (hedged_returns * weights).sum(axis=1)
-portfolio_index_hedged = (1 + portfolio_returns_hedged).cumprod()
+        # Vérifiez les noms des colonnes avant de les renommer
+        if len(combined.columns) == 2:
+            combined.columns = ['price', 'fx']
+            prices_eur[t] = combined['price'] * (1 / combined['fx'])
+            hedged_prices[t] = combined['price']
+        else:
+            st.warning(f"La structure des données pour {t} n'est pas celle attendue. Vérifiez les colonnes.")
 
 # =====================
 # Benchmark composite
