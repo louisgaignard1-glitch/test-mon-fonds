@@ -206,7 +206,7 @@ fig.update_layout(
 st.plotly_chart(fig, use_container_width=True)
 
 # =====================
-# Texte explicatif benchmark
+# Texte explicatif 
 # =====================
 st.subheader("📊 Composition du benchmark")
 st.markdown("""
@@ -218,6 +218,18 @@ Le benchmark composite reflète la structure multi-actifs du portefeuille :
 • 5% MSCI Emerging Markets → actions émergentes
 Ce benchmark permet une comparaison plus réaliste qu’un indice actions pur.
 """)
+st.subheader("💱 Couverture FX USD")
+
+st.markdown("""
+Cette simulation couvre le risque de change des actions américaines (ex: UBER, GOOGL) en utilisant un **contrat forward** pour figer le taux EUR/USD.
+
+**Formule appliquée :**
+Return hedgé = Return en USD − Variation du taux EUR/USD
+
+→ Cela neutralise l’impact des fluctuations du change, comme si vous aviez verrouillé le taux de change initial.
+*(Simplification : pas de coût de couverture inclus.)*
+""")
+
 
 # =====================
 # Calcul des performances
