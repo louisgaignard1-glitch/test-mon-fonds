@@ -72,6 +72,7 @@ if prices.empty:
 # =====================
 weights = pd.Series(allocation)
 weights = weights[weights.index.isin(prices.columns)]
+weights = weights / weights.sum()   
 if weights.empty:
     st.error("Aucun poids valide n'a pu être calculé. Vérifiez les tickers et les allocations.")
     st.stop()
