@@ -120,7 +120,7 @@ try:
         # Hedge uniquement actions USD
         for t in usd_tickers:
             if t in hedged_returns.columns:
-                hedged_returns[t] = returns[t] + fx_returns
+                hedged_returns[t] = (1+returns[t])*(1+(-fx_returns))-1
 
 except Exception as e:
     st.warning(f"Hedge FX non appliqué : {e}")
