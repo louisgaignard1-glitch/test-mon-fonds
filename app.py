@@ -42,7 +42,6 @@ start = st.sidebar.date_input("Start date", datetime(2020, 1, 1))
 def load_prices(tickers, start):
     prices = pd.DataFrame()
     failed_tickers = []
-
     for t in tickers:
         try:
             tmp = yf.download(t, start=start)
@@ -59,10 +58,8 @@ def load_prices(tickers, start):
         except Exception as e:
             st.write(f"Erreur lors du téléchargement des données pour {t}: {e}")
             failed_tickers.append(t)
-
     if failed_tickers:
         st.warning(f"Les tickers suivants n'ont pas pu être téléchargés : {', '.join(failed_tickers)}. Vérifiez leur validité.")
-
     return prices
 
 prices = load_prices(tickers, start)
@@ -75,20 +72,51 @@ if prices.empty:
 # =====================
 weights = pd.Series(allocation)
 weights = weights[weights.index.isin(prices.columns)]
+if weights.empty:
+    st.error("Aucun poids valide n'a pu être calculé. Vérifiez les tickers et les allocations.")
+    st.stop()
+
 usd_tickers = ["UBER", "GOOGL", "META", "HWM", "AMZN"]
 
 # =====================
 # Télécharger EUR/USD
 # =====================
 fx = yf.download("EURUSD=X", start=start)
+if fx.empty:
+    st.error("Impossible de télécharger les données EUR/USD.")
+    st.stop()
+
 if "Adj Close" in fx.columns:
     fx_series = fx["Adj Close"]
 elif "Close" in fx.columns:
     fx_series = fx["Close"]
 else:
     fx_series = fx.iloc[:, 0]
-
 fx_series.index = pd.to_datetime(fx_series.index)
+
+# =====================
+# NAV portefeuille non hedgé
+# =====================
+prices_eur = prices.copy()
+for t in usd_tickers:
+    if t in prices.columns:
+        combined = pd.concat([prices[t], fx_series], axis=1, join='outer').ffill()
+        if len(combined.columns) == 2:
+            combined.columns = ['price', 'fx']
+            prices_eur[t] = combined['price'] * (1 / combined['fx'])
+        else:
+            st.warning(f"La structure des données pour {t} n'est pas celle attendue. Vérifiez les colonnes.")
+
+if prices_eur.empty:
+    st.error("Aucune donnée de prix en EUR n'a pu être calculée.")
+    st.stop()
+
+returns = prices_eur.pct_change().fillna(0)
+portfolio_returns = (returns * weights).sum(axis=1)
+portfolio_index = (1 + portfolio_returns).cumprod()
+if portfolio_index.empty:
+    st.error("Impossible de calculer l'indice du portefeuille.")
+    st.stop()
 
 # =====================
 # NAV portefeuille hedgé
@@ -110,12 +138,9 @@ if hedged_prices.empty:
 hedged_returns = hedged_prices.pct_change().fillna(0)
 portfolio_returns_hedged = (hedged_returns * weights).sum(axis=1)
 portfolio_index_hedged = (1 + portfolio_returns_hedged).cumprod()
-
 if portfolio_index_hedged.empty:
     st.error("Impossible de calculer l'indice du portefeuille hedgé.")
     st.stop()
-
-
 
 # =====================
 # Benchmark composite
@@ -129,7 +154,6 @@ def load_benchmark_composite(start):
         "VNQ": 0.10,
         "EEM": 0.05
     }
-
     prices = pd.DataFrame()
     for ticker in benchmark_weights.keys():
         tmp = yf.download(ticker, start=start)
@@ -138,7 +162,9 @@ def load_benchmark_composite(start):
                 prices[ticker] = tmp["Adj Close"]
             elif "Close" in tmp.columns:
                 prices[ticker] = tmp["Close"]
-
+    if prices.empty:
+        st.error("Aucune donnée de benchmark n'a pu être téléchargée.")
+        st.stop()
     prices = prices.fillna(method="ffill")
     weights = pd.Series(benchmark_weights)
     returns = prices.pct_change().fillna(0)
@@ -154,34 +180,29 @@ if bench_index.empty:
 # Graphique
 # =====================
 fig = go.Figure()
-
 fig.add_trace(go.Scatter(
     x=portfolio_index.index,
     y=portfolio_index,
     name="Portfolio",
     line=dict(width=3, color='blue')
 ))
-
 fig.add_trace(go.Scatter(
     x=bench_index.index,
     y=bench_index,
     name="Benchmark composite",
     line=dict(width=3, color='orange')
 ))
-
 fig.add_trace(go.Scatter(
     x=portfolio_index_hedged.index,
     y=portfolio_index_hedged,
     name="Portfolio hedgé USD",
     line=dict(width=3, dash="dot", color="green")
 ))
-
 fig.update_layout(
     height=600,
     template="plotly_white",
     title="Performance cumulée"
 )
-
 st.plotly_chart(fig, use_container_width=True)
 
 # =====================
@@ -198,16 +219,8 @@ Le benchmark composite reflète la structure multi-actifs du portefeuille :
 Ce benchmark permet une comparaison plus réaliste qu’un indice actions pur.
 """)
 
-st.subheader("💱 Couverture FX USD")
-st.markdown("""
-Une simulation de couverture du risque dollar est appliquée via des contrats à terme FX (forwards).
-Les actions américaines sont couvertes en neutralisant la variation EUR/USD.
-Return hedgé ≈ Return action USD − Return EURUSD
-Cette approche simule un hedge forward à 100% sans coût de carry.
-""")
-
 # =====================
-# Calcul des performances et métriques supplémentaires
+# Calcul des performances
 # =====================
 def calculate_performance(index_series, days):
     if len(index_series) < 2:
@@ -219,16 +232,6 @@ def calculate_performance(index_series, days):
     end_value = index_series.iloc[-1]
     return (end_value / start_value - 1) * 100
 
-def calculate_sharpe_ratio(returns_series, risk_free_rate=0.0):
-    excess_returns = returns_series - risk_free_rate
-    return excess_returns.mean() / excess_returns.std() if excess_returns.std() != 0 else 0
-
-def calculate_max_drawdown(index_series):
-    cumulative_max = index_series.cummax()
-    drawdown = (index_series - cumulative_max) / cumulative_max
-    return drawdown.min()
-
-# Calcul des performances
 portfolio_perf_yesterday = calculate_performance(portfolio_index, 1)
 portfolio_perf_1y = calculate_performance(portfolio_index, 365)
 portfolio_perf_3y = calculate_performance(portfolio_index, 3*365)
@@ -241,53 +244,32 @@ benchmark_perf_yesterday = calculate_performance(bench_index, 1)
 benchmark_perf_1y = calculate_performance(bench_index, 365)
 benchmark_perf_3y = calculate_performance(bench_index, 3*365)
 
-# Calcul des métriques supplémentaires
-portfolio_sharpe = calculate_sharpe_ratio(portfolio_returns)
-portfolio_hedged_sharpe = calculate_sharpe_ratio(portfolio_returns_hedged)
-benchmark_sharpe = calculate_sharpe_ratio((bench_index.pct_change().fillna(0)))
-
-portfolio_max_drawdown = calculate_max_drawdown(portfolio_index)
-portfolio_hedged_max_drawdown = calculate_max_drawdown(portfolio_index_hedged)
-benchmark_max_drawdown = calculate_max_drawdown(bench_index)
-
 # =====================
-# Affichage des performances et métriques
+# Affichage des performances
 # =====================
 st.subheader("📈 Performances")
-
 col1, col2, col3 = st.columns(3)
-
 with col1:
     st.markdown("**Portefeuille**")
     st.metric("Perf de la veille", f"{portfolio_perf_yesterday:.2f}%")
     st.metric("Perf sur 1 an", f"{portfolio_perf_1y:.2f}%")
     st.metric("Perf sur 3 ans", f"{portfolio_perf_3y:.2f}%")
-    st.metric("Ratio de Sharpe", f"{portfolio_sharpe:.2f}")
-    st.metric("Max Drawdown", f"{portfolio_max_drawdown:.2%}")
-
 with col2:
     st.markdown("**Portefeuille Hedgé USD**")
     st.metric("Perf de la veille", f"{portfolio_hedged_perf_yesterday:.2f}%")
     st.metric("Perf sur 1 an", f"{portfolio_hedged_perf_1y:.2f}%")
     st.metric("Perf sur 3 ans", f"{portfolio_hedged_perf_3y:.2f}%")
-    st.metric("Ratio de Sharpe", f"{portfolio_hedged_sharpe:.2f}")
-    st.metric("Max Drawdown", f"{portfolio_hedged_max_drawdown:.2%}")
-
 with col3:
     st.markdown("**Benchmark**")
     st.metric("Perf de la veille", f"{benchmark_perf_yesterday:.2f}%")
     st.metric("Perf sur 1 an", f"{benchmark_perf_1y:.2f}%")
     st.metric("Perf sur 3 ans", f"{benchmark_perf_3y:.2f}%")
-    st.metric("Ratio de Sharpe", f"{benchmark_sharpe:.2f}")
-    st.metric("Max Drawdown", f"{benchmark_max_drawdown:.2%}")
 
 # =====================
 # Metrics globales
 # =====================
 st.subheader("📊 Statistiques globales")
-
 col1, col2, col3 = st.columns(3)
-
 col1.metric("Perf portefeuille (depuis début)", f"{(portfolio_index.iloc[-1]-1)*100:.2f}%")
 col2.metric("Perf portefeuille hedgé (depuis début)", f"{(portfolio_index_hedged.iloc[-1]-1)*100:.2f}%")
 col3.metric("Perf benchmark (depuis début)", f"{(bench_index.iloc[-1]-1)*100:.2f}%")
