@@ -101,7 +101,7 @@ fx_series.index = pd.to_datetime(fx_series.index)
 prices_eur = prices.copy()
 for t in usd_tickers:
     if t in prices.columns:
-        combined = pd.concat([prices[t], fx_series], axis=1, join='outer').ffill()
+        combined = pd.concat([prices[t], fx_series], axis=1, join='inner').ffill()
         if len(combined.columns) == 2:
             combined.columns = ['price', 'fx']
             prices_eur[t] = combined['price'] * (1 / combined['fx'])
@@ -177,6 +177,11 @@ if bench_index.empty:
     st.error("Impossible de calculer le benchmark.")
     st.stop()
 
+common_index = portfolio_index.index.intersection(bench_index.index)
+
+portfolio_index = portfolio_index.loc[common_index]
+portfolio_index_hedged = portfolio_index_hedged.loc[common_index]
+bench_index = bench_index.loc[common_index]
 # =====================
 # Graphique
 # =====================
