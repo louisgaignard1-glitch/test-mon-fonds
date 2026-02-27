@@ -190,13 +190,13 @@ fig.add_trace(go.Scatter(
     x=bench_index.index,
     y=bench_index,
     name="Benchmark composite",
-    line=dict(width=3, color='orange')
+    line=dict(width=3, color='green')
 ))
 fig.add_trace(go.Scatter(
     x=portfolio_index_hedged.index,
     y=portfolio_index_hedged,
     name="Portfolio hedgé USD",
-    line=dict(width=3, dash="dot", color="green")
+    line=dict(width=3, dash="dot", color="red")
 ))
 fig.update_layout(
     height=600,
@@ -270,8 +270,8 @@ with col3:
 # =====================
 st.subheader("📊 Statistiques globales")
 col1, col2, col3 = st.columns(3)
-col1.metric("Perf portefeuille (depuis début)", f"{(portfolio_index.iloc[-1]-1)*100:.2f}%")
-col2.metric("Perf portefeuille hedgé (depuis début)", f"{(portfolio_index_hedged.iloc[-1]-1)*100:.2f}%")
-col3.metric("Perf benchmark (depuis début)", f"{(bench_index.iloc[-1]-1)*100:.2f}%")
+col1.metric("Perf portefeuille (depuis le début)", f"{(portfolio_index.iloc[-1]-1)*100:.2f}%")
+col2.metric("Perf portefeuille hedgé (depuis le début)", f"{(portfolio_index_hedged.iloc[-1]-1)*100:.2f}%")
+col3.metric("Perf benchmark (depuis le début)", f"{(bench_index.iloc[-1]-1)*100:.2f}%")
 
 st.caption("Mise à jour automatique toutes les heures")
