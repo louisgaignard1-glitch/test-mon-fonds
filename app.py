@@ -36,8 +36,7 @@ allocation = {
 
 tickers = list(allocation.keys())
 start = st.sidebar.date_input("Start date", datetime(2020, 1, 1))
-if failed_tickers:
-    st.warning(f"Les tickers suivants n'ont pas pu être téléchargés : {', '.join(failed_tickers)}. Vérifiez leur validité.")
+
 
 # =====================
 # Chargement prix
@@ -65,7 +64,7 @@ def load_prices(tickers, start):
             failed_tickers.append(t)
 
     if failed_tickers:
-        st.warning(f"Impossible de récupérer les prix pour : {', '.join(failed_tickers)}")
+    st.warning(f"Les tickers suivants n'ont pas pu être téléchargés : {', '.join(failed_tickers)}. Vérifiez leur validité.")
 
     return prices
 
