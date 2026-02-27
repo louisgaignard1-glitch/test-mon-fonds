@@ -190,13 +190,13 @@ fig.add_trace(go.Scatter(
     x=bench_index.index,
     y=bench_index,
     name="Benchmark composite",
-    line=dict(width=3, color='green')
+    line=dict(width=3, color='red')
 ))
 fig.add_trace(go.Scatter(
     x=portfolio_index_hedged.index,
     y=portfolio_index_hedged,
     name="Portfolio hedgé USD",
-    line=dict(width=3, dash="dot", color="red")
+    line=dict(width=3, dash="dot", color="green")
 ))
 fig.update_layout(
     height=600,
