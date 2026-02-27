@@ -91,32 +91,30 @@ else:
 fx_series.index = pd.to_datetime(fx_series.index)
 
 # =====================
-# NAV portefeuille non hedgé et hedgé
+# NAV portefeuille hedgé
 # =====================
-prices_eur = prices.copy()
 hedged_prices = prices.copy()
-
 for t in usd_tickers:
     if t in prices.columns:
         combined = pd.concat([prices[t], fx_series], axis=1, join='outer').ffill()
         if len(combined.columns) == 2:
             combined.columns = ['price', 'fx']
-            prices_eur[t] = combined['price'] * (1 / combined['fx'])
             hedged_prices[t] = combined['price']
         else:
             st.warning(f"La structure des données pour {t} n'est pas celle attendue. Vérifiez les colonnes.")
 
-if prices_eur.empty:
-    st.error("Aucune donnée de prix en EUR n'a pu être calculée.")
+if hedged_prices.empty:
+    st.error("Aucune donnée de prix hedgé n'a pu être calculée.")
     st.stop()
 
-returns = prices_eur.pct_change().fillna(0)
-portfolio_returns = (returns * weights).sum(axis=1)
-portfolio_index = (1 + portfolio_returns).cumprod()
+hedged_returns = hedged_prices.pct_change().fillna(0)
+portfolio_returns_hedged = (hedged_returns * weights).sum(axis=1)
+portfolio_index_hedged = (1 + portfolio_returns_hedged).cumprod()
 
-if portfolio_index.empty:
-    st.error("Impossible de calculer l'indice du portefeuille.")
+if portfolio_index_hedged.empty:
+    st.error("Impossible de calculer l'indice du portefeuille hedgé.")
     st.stop()
+
 
 
 # =====================
