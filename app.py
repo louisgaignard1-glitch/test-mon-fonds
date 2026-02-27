@@ -86,44 +86,51 @@ portfolio_returns = (returns * weights).sum(axis=1)
 portfolio_index = (1 + portfolio_returns).cumprod()
 
 # =====================
-# Hedge FX USD via forwards (simulation robuste)
+# Hedge FX USD (version définitive stable)
 # =====================
 usd_tickers = ["UBER", "GOOGL", "META", "HWM", "AMZN"]
 
-# téléchargement FX
-fx = yf.download("EURUSD=X", start=start, auto_adjust=True)
-
 hedged_returns = returns.copy()
 
-if not fx.empty:
+try:
+    fx = yf.download("EURUSD=X", start=start)
 
-    # S'assurer qu'on récupère une vraie Series
-    if isinstance(fx, pd.DataFrame):
-        fx_series = fx.iloc[:, 0]
-    else:
-        fx_series = fx
+    if not fx.empty:
 
-    # Forcer index datetime
-    fx_series.index = pd.to_datetime(fx_series.index)
-    returns.index = pd.to_datetime(returns.index)
+        # Extraire série propre
+        if "Adj Close" in fx.columns:
+            fx_series = fx["Adj Close"]
+        elif "Close" in fx.columns:
+            fx_series = fx["Close"]
+        else:
+            fx_series = fx.iloc[:, 0]
 
-    # Alignement STRICT sur index portefeuille
-    fx_series = fx_series.reindex(returns.index)
+        # Forcer Series
+        if isinstance(fx_series, pd.DataFrame):
+            fx_series = fx_series.iloc[:, 0]
 
-    # Remplissage sécurisé
-    fx_series = fx_series.ffill().bfill()
+        # Alignement strict des dates
+        fx_series.index = pd.to_datetime(fx_series.index)
+        hedged_returns.index = pd.to_datetime(hedged_returns.index)
 
-    # Calcul return FX
-    fx_returns = fx_series.pct_change()
-    fx_returns = fx_returns.fillna(0)
+        fx_series = fx_series.reindex(hedged_returns.index).ffill().bfill()
 
-    # Conversion explicite en numpy array (anti bug pandas 3.13)
-    fx_array = fx_returns.to_numpy()
+        # Returns FX
+        fx_returns = fx_series.pct_change().fillna(0)
 
-    # Hedge ticker par ticker
-    for t in usd_tickers:
-        if t in hedged_returns.columns:
-            hedged_returns[t] = hedged_returns[t].to_numpy() - fx_array
+        # Sécurité anti bug pandas
+        fx_array = fx_returns.values
+
+        # Hedge uniquement actions USD
+        for t in usd_tickers:
+            if t in hedged_returns.columns:
+                hedged_returns[t] = hedged_returns[t].values - fx_array
+
+except Exception as e:
+    st.warning(f"Hedge FX non appliqué : {e}")
+
+# Nettoyage
+hedged_returns = hedged_returns.fillna(0)
 
 # NAV hedgée
 portfolio_returns_hedged = (hedged_returns * weights).sum(axis=1)
