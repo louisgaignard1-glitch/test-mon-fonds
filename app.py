@@ -6,13 +6,11 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 
 st.set_page_config(page_title="Portfolio vs Benchmark", layout="wide")
-
 st.title("📊 Portfolio vs Benchmark composite")
 
 # =====================
 # Allocation portefeuille
 # =====================
-# Remplacer les ISIN par des tickers Yahoo valides
 allocation = {
     "TTE.PA": 0.05,
     "MC.PA": 0.05,
@@ -63,7 +61,7 @@ def load_prices(tickers, start):
             failed_tickers.append(t)
 
     if failed_tickers:
-        st.warning(f"Impossible de récupérer les prix pour : {', '.join(failed_tickers)}")
+        st.warning(f"Les tickers suivants n'ont pas pu être téléchargés : {', '.join(failed_tickers)}. Vérifiez leur validité.")
 
     return prices
 
@@ -77,7 +75,6 @@ if prices.empty:
 # =====================
 weights = pd.Series(allocation)
 weights = weights[weights.index.isin(prices.columns)]
-
 usd_tickers = ["UBER", "GOOGL", "META", "HWM", "AMZN"]
 
 # =====================
@@ -94,29 +91,20 @@ else:
 fx_series.index = pd.to_datetime(fx_series.index)
 
 # =====================
-# NAV portefeuille non hedgé
+# NAV portefeuille non hedgé et hedgé
 # =====================
 prices_eur = prices.copy()
+hedged_prices = prices.copy()
+
 for t in usd_tickers:
     if t in prices.columns:
-        # Alignement exact
-        combined = pd.concat([prices[t], fx_series], axis=1, join='inner')
-        combined.columns = ['price', 'fx']
+        combined = pd.concat([prices[t], fx_series], axis=1, join='outer').ffill()
         prices_eur[t] = combined['price'] * (1 / combined['fx'])
+        hedged_prices[t] = combined['price']
 
 returns = prices_eur.pct_change().fillna(0)
 portfolio_returns = (returns * weights).sum(axis=1)
 portfolio_index = (1 + portfolio_returns).cumprod()
-
-# =====================
-# NAV portefeuille hedgé
-# =====================
-hedged_prices = prices.copy()
-for t in usd_tickers:
-    if t in prices.columns:
-        combined = pd.concat([prices[t], fx_series], axis=1, join='inner')
-        combined.columns = ['price', 'fx']
-        hedged_prices[t] = combined['price'] * (1 / combined['fx'])
 
 hedged_returns = hedged_prices.pct_change().fillna(0)
 portfolio_returns_hedged = (hedged_returns * weights).sum(axis=1)
@@ -164,14 +152,14 @@ fig.add_trace(go.Scatter(
     x=portfolio_index.index,
     y=portfolio_index,
     name="Portfolio",
-    line=dict(width=3)
+    line=dict(width=3, color='blue')
 ))
 
 fig.add_trace(go.Scatter(
     x=bench_index.index,
     y=bench_index,
     name="Benchmark composite",
-    line=dict(width=3)  # Ligne continue
+    line=dict(width=3, color='orange')
 ))
 
 fig.add_trace(go.Scatter(
@@ -193,69 +181,70 @@ st.plotly_chart(fig, use_container_width=True)
 # Texte explicatif benchmark
 # =====================
 st.subheader("📊 Composition du benchmark")
-
 st.markdown("""
 Le benchmark composite reflète la structure multi-actifs du portefeuille :
-
 • 35% MSCI Europe Index (IEV) → actions européennes
 • 20% S&P 500 → actions américaines
 • 25% Obligations américaines à long terme → obligations
 • 10% Immobilier américain → immobilier
 • 5% MSCI Emerging Markets → actions émergentes
-
 Ce benchmark permet une comparaison plus réaliste qu’un indice actions pur.
 """)
 
 st.subheader("💱 Couverture FX USD")
-
 st.markdown("""
 Une simulation de couverture du risque dollar est appliquée via des contrats à terme FX (forwards).
-
-Les actions américaines sont couvertes en neutralisant la variation EUR/USD :
-
+Les actions américaines sont couvertes en neutralisant la variation EUR/USD.
 Return hedgé ≈ Return action USD − Return EURUSD
-
 Cette approche simule un hedge forward à 100% sans coût de carry.
 """)
 
 # =====================
-# Calcul des performances
+# Calcul des performances et métriques supplémentaires
 # =====================
-
-# Fonction pour calculer la performance sur une période donnée
 def calculate_performance(index_series, days):
     if len(index_series) < 2:
         return 0.0
-    if days == 1:  # Performance de la veille
-        if len(index_series) >= 2:
-            return (index_series.iloc[-1] / index_series.iloc[-2] - 1) * 100
-        else:
-            return 0.0
-    else:
-        start_date = index_series.index[-1] - timedelta(days=days)
-        if start_date < index_series.index[0]:
-            start_date = index_series.index[0]
-        start_value = index_series[index_series.index >= start_date].iloc[0]
-        end_value = index_series.iloc[-1]
-        return (end_value / start_value - 1) * 100
+    start_date = index_series.index[-1] - timedelta(days=days)
+    if start_date < index_series.index[0]:
+        start_date = index_series.index[0]
+    start_value = index_series[index_series.index >= start_date].iloc[0]
+    end_value = index_series.iloc[-1]
+    return (end_value / start_value - 1) * 100
 
-# Calcul des performances pour le portefeuille
+def calculate_sharpe_ratio(returns_series, risk_free_rate=0.0):
+    excess_returns = returns_series - risk_free_rate
+    return excess_returns.mean() / excess_returns.std() if excess_returns.std() != 0 else 0
+
+def calculate_max_drawdown(index_series):
+    cumulative_max = index_series.cummax()
+    drawdown = (index_series - cumulative_max) / cumulative_max
+    return drawdown.min()
+
+# Calcul des performances
 portfolio_perf_yesterday = calculate_performance(portfolio_index, 1)
 portfolio_perf_1y = calculate_performance(portfolio_index, 365)
 portfolio_perf_3y = calculate_performance(portfolio_index, 3*365)
 
-# Calcul des performances pour le portefeuille hedgé
 portfolio_hedged_perf_yesterday = calculate_performance(portfolio_index_hedged, 1)
 portfolio_hedged_perf_1y = calculate_performance(portfolio_index_hedged, 365)
 portfolio_hedged_perf_3y = calculate_performance(portfolio_index_hedged, 3*365)
 
-# Calcul des performances pour le benchmark
 benchmark_perf_yesterday = calculate_performance(bench_index, 1)
 benchmark_perf_1y = calculate_performance(bench_index, 365)
 benchmark_perf_3y = calculate_performance(bench_index, 3*365)
 
+# Calcul des métriques supplémentaires
+portfolio_sharpe = calculate_sharpe_ratio(portfolio_returns)
+portfolio_hedged_sharpe = calculate_sharpe_ratio(portfolio_returns_hedged)
+benchmark_sharpe = calculate_sharpe_ratio((bench_index.pct_change().fillna(0)))
+
+portfolio_max_drawdown = calculate_max_drawdown(portfolio_index)
+portfolio_hedged_max_drawdown = calculate_max_drawdown(portfolio_index_hedged)
+benchmark_max_drawdown = calculate_max_drawdown(bench_index)
+
 # =====================
-# Affichage des performances
+# Affichage des performances et métriques
 # =====================
 st.subheader("📈 Performances")
 
@@ -266,18 +255,24 @@ with col1:
     st.metric("Perf de la veille", f"{portfolio_perf_yesterday:.2f}%")
     st.metric("Perf sur 1 an", f"{portfolio_perf_1y:.2f}%")
     st.metric("Perf sur 3 ans", f"{portfolio_perf_3y:.2f}%")
+    st.metric("Ratio de Sharpe", f"{portfolio_sharpe:.2f}")
+    st.metric("Max Drawdown", f"{portfolio_max_drawdown:.2%}")
 
 with col2:
     st.markdown("**Portefeuille Hedgé USD**")
     st.metric("Perf de la veille", f"{portfolio_hedged_perf_yesterday:.2f}%")
     st.metric("Perf sur 1 an", f"{portfolio_hedged_perf_1y:.2f}%")
     st.metric("Perf sur 3 ans", f"{portfolio_hedged_perf_3y:.2f}%")
+    st.metric("Ratio de Sharpe", f"{portfolio_hedged_sharpe:.2f}")
+    st.metric("Max Drawdown", f"{portfolio_hedged_max_drawdown:.2%}")
 
 with col3:
     st.markdown("**Benchmark**")
     st.metric("Perf de la veille", f"{benchmark_perf_yesterday:.2f}%")
     st.metric("Perf sur 1 an", f"{benchmark_perf_1y:.2f}%")
     st.metric("Perf sur 3 ans", f"{benchmark_perf_3y:.2f}%")
+    st.metric("Ratio de Sharpe", f"{benchmark_sharpe:.2f}")
+    st.metric("Max Drawdown", f"{benchmark_max_drawdown:.2%}")
 
 # =====================
 # Metrics globales
