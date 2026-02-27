@@ -190,7 +190,7 @@ fig.add_trace(go.Scatter(
     x=bench_index.index,
     y=bench_index,
     name="Benchmark composite",
-    line=dict(width=3, color='red')
+    line=dict(width=3, color='orange')
 ))
 fig.add_trace(go.Scatter(
     x=portfolio_index_hedged.index,
