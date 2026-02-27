@@ -86,7 +86,7 @@ portfolio_returns = (returns * weights).sum(axis=1)
 portfolio_index = (1 + portfolio_returns).cumprod()
 
 # =====================
-# Hedge FX USD (version définitive stable)
+# Hedge FX USD
 # =====================
 usd_tickers = ["UBER", "GOOGL", "META", "HWM", "AMZN"]
 
@@ -96,7 +96,6 @@ try:
     fx = yf.download("EURUSD=X", start=start)
 
     if not fx.empty:
-
         # Extraire série propre
         if "Adj Close" in fx.columns:
             fx_series = fx["Adj Close"]
@@ -118,13 +117,10 @@ try:
         # Returns FX
         fx_returns = fx_series.pct_change().fillna(0)
 
-        # Sécurité anti bug pandas
-        fx_array = fx_returns.values
-
         # Hedge uniquement actions USD
         for t in usd_tickers:
             if t in hedged_returns.columns:
-                hedged_returns[t] = hedged_returns[t].values - fx_array
+                hedged_returns[t] = returns[t] - fx_returns
 
 except Exception as e:
     st.warning(f"Hedge FX non appliqué : {e}")
@@ -135,6 +131,7 @@ hedged_returns = hedged_returns.fillna(0)
 # NAV hedgée
 portfolio_returns_hedged = (hedged_returns * weights).sum(axis=1)
 portfolio_index_hedged = (1 + portfolio_returns_hedged).cumprod()
+
 # =====================
 # Benchmark composite
 # =====================
@@ -208,12 +205,14 @@ fig.add_trace(go.Scatter(
     name="Benchmark composite",
     line=dict(width=3)  # Ligne continue
 ))
+
 fig.add_trace(go.Scatter(
     x=portfolio_index_hedged.index,
     y=portfolio_index_hedged,
     name="Portfolio hedgé USD",
-    line=dict(width=3, dash="dot")
+    line=dict(width=3, dash="dot", color="green")
 ))
+
 fig.update_layout(
     height=600,
     template="plotly_white",
@@ -238,6 +237,7 @@ Le benchmark composite reflète la structure multi-actifs du portefeuille :
 
 Ce benchmark permet une comparaison plus réaliste qu’un indice actions pur.
 """)
+
 st.subheader("💱 Couverture FX USD")
 
 st.markdown("""
@@ -249,6 +249,7 @@ Return hedgé ≈ Return action USD − Return EURUSD
 
 Cette approche simule un hedge forward à 100% sans coût de carry.
 """)
+
 # =====================
 # Calcul des performances
 # =====================
@@ -275,6 +276,11 @@ portfolio_perf_yesterday = calculate_performance(portfolio_index, 1)
 portfolio_perf_1y = calculate_performance(portfolio_index, 365)
 portfolio_perf_3y = calculate_performance(portfolio_index, 3*365)
 
+# Calcul des performances pour le portefeuille hedgé
+portfolio_hedged_perf_yesterday = calculate_performance(portfolio_index_hedged, 1)
+portfolio_hedged_perf_1y = calculate_performance(portfolio_index_hedged, 365)
+portfolio_hedged_perf_3y = calculate_performance(portfolio_index_hedged, 3*365)
+
 # Calcul des performances pour le benchmark
 benchmark_perf_yesterday = calculate_performance(bench_index, 1)
 benchmark_perf_1y = calculate_performance(bench_index, 365)
@@ -285,7 +291,7 @@ benchmark_perf_3y = calculate_performance(bench_index, 3*365)
 # =====================
 st.subheader("📈 Performances")
 
-col1, col2 = st.columns(2)
+col1, col2, col3 = st.columns(3)
 
 with col1:
     st.markdown("**Portefeuille**")
@@ -294,6 +300,12 @@ with col1:
     st.metric("Perf sur 3 ans", f"{portfolio_perf_3y:.2f}%")
 
 with col2:
+    st.markdown("**Portefeuille Hedgé USD**")
+    st.metric("Perf de la veille", f"{portfolio_hedged_perf_yesterday:.2f}%")
+    st.metric("Perf sur 1 an", f"{portfolio_hedged_perf_1y:.2f}%")
+    st.metric("Perf sur 3 ans", f"{portfolio_hedged_perf_3y:.2f}%")
+
+with col3:
     st.markdown("**Benchmark**")
     st.metric("Perf de la veille", f"{benchmark_perf_yesterday:.2f}%")
     st.metric("Perf sur 1 an", f"{benchmark_perf_1y:.2f}%")
@@ -304,9 +316,10 @@ with col2:
 # =====================
 st.subheader("📊 Statistiques globales")
 
-col1, col2 = st.columns(2)
+col1, col2, col3 = st.columns(3)
 
 col1.metric("Perf portefeuille (depuis début)", f"{(portfolio_index.iloc[-1]-1)*100:.2f}%")
-col2.metric("Perf benchmark (depuis début)", f"{(bench_index.iloc[-1]-1)*100:.2f}%")
+col2.metric("Perf portefeuille hedgé (depuis début)", f"{(portfolio_index_hedged.iloc[-1]-1)*100:.2f}%")
+col3.metric("Perf benchmark (depuis début)", f"{(bench_index.iloc[-1]-1)*100:.2f}%")
 
 st.caption("Mise à jour automatique toutes les heures")
