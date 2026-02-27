@@ -26,13 +26,12 @@ allocation = {
     "META": 0.02,
     "HWM": 0.03,
     "AMZN": 0.03,
-    # Exemples de fonds Yahoo valides
-    "FP0BIEU.F": 0.08,
-    "FP0B7D3.F": 0.08,
-    "FP0B5L8.F": 0.09,
-    "FP0B4WQ.F": 0.08,
-    "FP0B0VD.F": 0.05,
-    "FP0B3H2.F": 0.08
+    "0P0000ZWX4.F": 0.08,
+    "0P0001861S.F": 0.08,
+    "0P00000M6C.F": 0.09,
+    "0P00008ESK.F": 0.08,
+    "0P0000A6ZG.F": 0.05,
+    "0P0000WHLW.F": 0.08
 }
 
 tickers = list(allocation.keys())
