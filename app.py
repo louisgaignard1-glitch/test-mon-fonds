@@ -159,9 +159,135 @@ if bench_index.empty:
 # Graphique
 # =====================
 fig = go.Figure()
-fig.add_trace(go.Scatter(x=portfolio_index.index, y=portfolio_index, name="Portfolio", line=dict(width=3)))
-fig.add_trace(go.Scatter(x=bench_index.index, y=bench_index, name="Benchmark composite", line=dict(width=3)))
-fig.add_trace(go.Scatter(x=portfolio_index_hedged.index, y=portfolio_index_hedged, name="Portfolio hedgé USD", line=dict(width=3, dash="dot", color="green")))
 
-fig.update_layout(height=600, template="plotly_white", title="Performance cumulée")
+fig.add_trace(go.Scatter(
+    x=portfolio_index.index,
+    y=portfolio_index,
+    name="Portfolio",
+    line=dict(width=3)
+))
+
+fig.add_trace(go.Scatter(
+    x=bench_index.index,
+    y=bench_index,
+    name="Benchmark composite",
+    line=dict(width=3)  # Ligne continue
+))
+
+fig.add_trace(go.Scatter(
+    x=portfolio_index_hedged.index,
+    y=portfolio_index_hedged,
+    name="Portfolio hedgé USD",
+    line=dict(width=3, dash="dot", color="green")
+))
+
+fig.update_layout(
+    height=600,
+    template="plotly_white",
+    title="Performance cumulée"
+)
+
 st.plotly_chart(fig, use_container_width=True)
+
+# =====================
+# Texte explicatif benchmark
+# =====================
+st.subheader("📊 Composition du benchmark")
+
+st.markdown("""
+Le benchmark composite reflète la structure multi-actifs du portefeuille :
+
+• 35% MSCI Europe Index (IEV) → actions européennes
+• 20% S&P 500 → actions américaines
+• 25% Obligations américaines à long terme → obligations
+• 10% Immobilier américain → immobilier
+• 5% MSCI Emerging Markets → actions émergentes
+
+Ce benchmark permet une comparaison plus réaliste qu’un indice actions pur.
+""")
+
+st.subheader("💱 Couverture FX USD")
+
+st.markdown("""
+Une simulation de couverture du risque dollar est appliquée via des contrats à terme FX (forwards).
+
+Les actions américaines sont couvertes en neutralisant la variation EUR/USD :
+
+Return hedgé ≈ Return action USD − Return EURUSD
+
+Cette approche simule un hedge forward à 100% sans coût de carry.
+""")
+
+# =====================
+# Calcul des performances
+# =====================
+
+# Fonction pour calculer la performance sur une période donnée
+def calculate_performance(index_series, days):
+    if len(index_series) < 2:
+        return 0.0
+    if days == 1:  # Performance de la veille
+        if len(index_series) >= 2:
+            return (index_series.iloc[-1] / index_series.iloc[-2] - 1) * 100
+        else:
+            return 0.0
+    else:
+        start_date = index_series.index[-1] - timedelta(days=days)
+        if start_date < index_series.index[0]:
+            start_date = index_series.index[0]
+        start_value = index_series[index_series.index >= start_date].iloc[0]
+        end_value = index_series.iloc[-1]
+        return (end_value / start_value - 1) * 100
+
+# Calcul des performances pour le portefeuille
+portfolio_perf_yesterday = calculate_performance(portfolio_index, 1)
+portfolio_perf_1y = calculate_performance(portfolio_index, 365)
+portfolio_perf_3y = calculate_performance(portfolio_index, 3*365)
+
+# Calcul des performances pour le portefeuille hedgé
+portfolio_hedged_perf_yesterday = calculate_performance(portfolio_index_hedged, 1)
+portfolio_hedged_perf_1y = calculate_performance(portfolio_index_hedged, 365)
+portfolio_hedged_perf_3y = calculate_performance(portfolio_index_hedged, 3*365)
+
+# Calcul des performances pour le benchmark
+benchmark_perf_yesterday = calculate_performance(bench_index, 1)
+benchmark_perf_1y = calculate_performance(bench_index, 365)
+benchmark_perf_3y = calculate_performance(bench_index, 3*365)
+
+# =====================
+# Affichage des performances
+# =====================
+st.subheader("📈 Performances")
+
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    st.markdown("**Portefeuille**")
+    st.metric("Perf de la veille", f"{portfolio_perf_yesterday:.2f}%")
+    st.metric("Perf sur 1 an", f"{portfolio_perf_1y:.2f}%")
+    st.metric("Perf sur 3 ans", f"{portfolio_perf_3y:.2f}%")
+
+with col2:
+    st.markdown("**Portefeuille Hedgé USD**")
+    st.metric("Perf de la veille", f"{portfolio_hedged_perf_yesterday:.2f}%")
+    st.metric("Perf sur 1 an", f"{portfolio_hedged_perf_1y:.2f}%")
+    st.metric("Perf sur 3 ans", f"{portfolio_hedged_perf_3y:.2f}%")
+
+with col3:
+    st.markdown("**Benchmark**")
+    st.metric("Perf de la veille", f"{benchmark_perf_yesterday:.2f}%")
+    st.metric("Perf sur 1 an", f"{benchmark_perf_1y:.2f}%")
+    st.metric("Perf sur 3 ans", f"{benchmark_perf_3y:.2f}%")
+
+# =====================
+# Metrics globales
+# =====================
+st.subheader("📊 Statistiques globales")
+
+col1, col2, col3 = st.columns(3)
+
+col1.metric("Perf portefeuille (depuis début)", f"{(portfolio_index.iloc[-1]-1)*100:.2f}%")
+col2.metric("Perf portefeuille hedgé (depuis début)", f"{(portfolio_index_hedged.iloc[-1]-1)*100:.2f}%")
+col3.metric("Perf benchmark (depuis début)", f"{(bench_index.iloc[-1]-1)*100:.2f}%")
+
+st.caption("Mise à jour automatique toutes les heures")
