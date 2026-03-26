@@ -17,7 +17,7 @@ allocation = {
     "INGA.AS": 0.05,
     "SAP.DE": 0.04,
     "ACLN.SW": 0.05,
-    "UBER": 0.04,
+    "THEON.AS": 0.04,
     "BOI.PA": 0.05,
     "EOAN.DE": 0.05,
     "GOOGL": 0.03,
