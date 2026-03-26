@@ -154,6 +154,8 @@ fx_series.index = pd.to_datetime(fx_series.index)
 # NAV portefeuille non hedgé
 # =====================
 prices_eur = prices.copy()
+
+# Conversion des actifs en USD en EUR
 for t in usd_tickers:
     if t in prices.columns:
         combined = pd.concat([prices[t], fx_series], axis=1, join='inner').ffill()
@@ -167,6 +169,10 @@ if prices_eur.empty:
     st.error("Aucune donnée de prix en EUR n'a pu être calculée.")
     st.stop()
 
+# Remplacer les valeurs manquantes dans prices_eur par la dernière valeur disponible (forward fill)
+prices_eur = prices_eur.ffill()
+
+# Calculer les rendements
 returns = prices_eur.pct_change().fillna(0)
 portfolio_returns = (returns * weights).sum(axis=1)
 portfolio_index = (1 + portfolio_returns).cumprod()
