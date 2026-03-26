@@ -391,7 +391,7 @@ Ce benchmark permet une comparaison plus réaliste qu'un indice actions pur.
 """)
 st.subheader("💱 Couverture FX USD")
 st.markdown("""
-Cette simulation couvre le risque de change des actions américaines (ex: UBER, GOOGL) en utilisant un **contrat forward** pour figer le taux EUR/USD.
+Cette simulation couvre le risque de change des actions américaines (ex: META, GOOGL) en utilisant un **contrat forward** pour figer le taux EUR/USD.
 
 **Formule appliquée :**
 Return hedgé = Return en USD − Variation du taux EUR/USD
