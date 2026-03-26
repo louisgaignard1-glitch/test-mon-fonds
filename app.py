@@ -386,23 +386,26 @@ if not available_fonds:
 
 # Filtrer les 30 derniers jours calendaires (≈ 1 mois)
 month_start = prices_eur.index[-1] - timedelta(days=30)
-prices_month_fonds = prices_eur[available_fonds].loc[month_start:].dropna(how='all')
+prices_month_fonds = prices_eur[available_fonds].loc[month_start:]
 
-# Vérifier les données après filtrage
-st.write("Données après filtrage :", prices_month_fonds)
+# Remplacer les valeurs manquantes par la dernière valeur disponible (forward fill)
+prices_month_fonds = prices_month_fonds.ffill()
 
-# Vérifier qu'il reste des fonds après nettoyage
-available_fonds_after_clean = prices_month_fonds.columns.tolist()
-if not available_fonds_after_clean:
-    st.error("Aucun fond n'a de données suffisantes pour le mois.")
+# Vérifier les données après remplissage
+st.write("Données après remplissage des valeurs manquantes :", prices_month_fonds)
+
+# Vérifier qu'il reste des fonds après traitement
+available_fonds_after_fill = prices_month_fonds.columns.tolist()
+if not available_fonds_after_fill:
+    st.error("Aucun fond n'a de données après traitement.")
     st.stop()
 
-# Calculer la performance pour chaque fond individuellement
-monthly_perf_fonds = pd.Series(index=available_fonds_after_clean, dtype=float)
+# Calculer la performance pour chaque fond
+monthly_perf_fonds = pd.Series(index=available_fonds_after_fill, dtype=float)
 
-for ticker in available_fonds_after_clean:
-    series = prices_month_fonds[ticker].dropna()
-    if len(series) >= 2:
+for ticker in available_fonds_after_fill:
+    series = prices_month_fonds[ticker]
+    if len(series) >= 2 and not series.isna().all():
         perf = (series.iloc[-1] / series.iloc[0] - 1) * 100
         monthly_perf_fonds[ticker] = perf
 
