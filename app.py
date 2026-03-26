@@ -384,6 +384,41 @@ else:
     st.warning("Pas assez de données disponibles pour calculer le top 5 hebdomadaire.")
 
 # =====================
+# Performance des fonds sur la dernière semaine
+# =====================
+st.subheader("📈 Performance des fonds sur la dernière semaine")
+
+# Liste des fonds à analyser
+fond_tickers = [
+    "0P0000ZWX4.F",  # Helium Fund Perf A EUR
+    "0P0001861S.F",  # Eleva Abs Ret Eurp S EUR
+    "0P00000M6C.F",  # R-co Conviction Credit Euro
+    "0P00008ESK.F",  # AXAIMFIIS US Short Dur HY
+    "0P0000A6ZG.F",  # Immobilier 21 AC
+    "0P0000WHLW.F"   # GemEquity R
+]
+
+# Filtrer les 7 derniers jours calendaires (≈ 5 jours ouvrés)
+week_start = prices_eur.index[-1] - timedelta(days=7)
+prices_week_fonds = prices_eur[fond_tickers][prices_eur.index >= week_start]
+
+# Calculer la performance de chaque fond sur la semaine
+if len(prices_week_fonds) >= 2:
+    weekly_perf_fonds = (prices_week_fonds.iloc[-1] / prices_week_fonds.iloc[0] - 1) * 100
+    weekly_perf_fonds = weekly_perf_fonds.dropna().sort_values(ascending=False)
+
+    # Afficher un tableau récapitulatif
+    df_fonds = pd.DataFrame({
+        "Fond": [ticker_names.get(t, t) for t in weekly_perf_fonds.index],
+        "Ticker": weekly_perf_fonds.index,
+        "Performance semaine": [f"{v:.2f}%" for v in weekly_perf_fonds.values],
+    }).reset_index(drop=True)
+
+    st.dataframe(df_fonds, use_container_width=True)
+else:
+    st.warning("Pas assez de données disponibles pour calculer la performance des fonds sur la semaine.")
+
+# =====================
 # Texte explicatif
 # =====================
 st.subheader("📊 Composition du benchmark")
