@@ -89,13 +89,14 @@ if missing.sum() > 0.20:
     st.error("Plus de 20% de l'allocation est manquante. Vérifiez les tickers des fonds.")
     st.stop()
 
-# Renormalisation des poids sur les actifs disponibles
-weights = present / present.sum()
+# Renormalisation des poids sur les actifs disponibles (95% du capital)
+weights = present / present.sum() * 0.95
 
 if weights.empty:
     st.error("Aucun poids valide n'a pu être calculé. Vérifiez les tickers et les allocations.")
     st.stop()
 
+# Tableau de contrôle des poids effectifs
 # Tableau de contrôle des poids effectifs
 with st.expander("🔍 Vérification des poids effectifs du portefeuille"):
     ticker_names_display = {
@@ -116,9 +117,19 @@ with st.expander("🔍 Vérification des poids effectifs du portefeuille"):
         "Poids cible": [f"{allocation[t]*100:.1f}%" for t in weights.index],
         "Poids effectif": [f"{w*100:.1f}%" for w in weights.values],
     }).reset_index(drop=True)
+
+    # Ajouter une ligne pour le cash
+    cash_row = pd.DataFrame({
+        "Actif": ["Cash"],
+        "Ticker": ["Cash"],
+        "Poids cible": ["5.0%"],
+        "Poids effectif": ["5.0%"]
+    })
+    df_weights = pd.concat([df_weights, cash_row], ignore_index=True)
+
     st.dataframe(df_weights, use_container_width=True)
     total_cible = sum(allocation.values()) * 100
-    total_effectif = weights.sum() * 100
+    total_effectif = (weights.sum() + 0.05) * 100
     st.caption(f"Total poids cible : {total_cible:.1f}% | Total poids effectif : {total_effectif:.1f}%")
 
 usd_tickers = [ "GOOGL", "META", "HWM", "AMZN"]
