@@ -361,10 +361,11 @@ if len(prices_month) >= 2:
 else:
     st.warning("Pas assez de données disponibles pour calculer le top 5 mensuel.")
 
+
 # =====================
-# Performance des fonds sur la dernière semaine
+# Performance des fonds sur le dernier mois
 # =====================
-st.subheader("📈 Performance des fonds sur la dernière semaine")
+st.subheader("📈 Performance des fonds sur le dernier mois")
 
 fond_tickers = [
     "0P0000ZWX4.F",  # Helium Fund Perf A EUR
@@ -383,27 +384,27 @@ if not available_fonds:
     st.error("Aucun fond disponible dans les données. Vérifiez les tickers.")
     st.stop()
 
-# Filtrer les 7 derniers jours calendaires
-week_start = prices_eur.index[-1] - timedelta(days=7)
-prices_week_fonds = prices_eur[available_fonds][prices_eur.index >= week_start]
+# Filtrer les 30 derniers jours calendaires (≈ 1 mois)
+month_start = prices_eur.index[-1] - timedelta(days=30)
+prices_month_fonds = prices_eur[available_fonds][prices_eur.index >= month_start]
 
-if len(prices_week_fonds) < 2:
-    st.error("Pas assez de données pour calculer la performance sur la semaine.")
+if len(prices_month_fonds) < 2:
+    st.error("Pas assez de données pour calculer la performance sur le mois.")
     st.stop()
 
 # Calculer la performance
-weekly_perf_fonds = (prices_week_fonds.iloc[-1] / prices_week_fonds.iloc[0] - 1) * 100
-weekly_perf_fonds = weekly_perf_fonds.dropna()
+monthly_perf_fonds = (prices_month_fonds.iloc[-1] / prices_month_fonds.iloc[0] - 1) * 100
+monthly_perf_fonds = monthly_perf_fonds.dropna()
 
-if weekly_perf_fonds.empty:
+if monthly_perf_fonds.empty:
     st.error("Aucune performance calculable. Vérifiez les données.")
     st.stop()
 
 # Afficher le tableau
 df_fonds = pd.DataFrame({
-    "Fond": [ticker_names.get(t, t) for t in weekly_perf_fonds.index],
-    "Ticker": weekly_perf_fonds.index,
-    "Performance semaine": [f"{v:.2f}%" for v in weekly_perf_fonds.values],
+    "Fond": [ticker_names.get(t, t) for t in monthly_perf_fonds.index],
+    "Ticker": monthly_perf_fonds.index,
+    "Performance mois": [f"{v:.2f}%" for v in monthly_perf_fonds.values],
 }).reset_index(drop=True)
 
 st.dataframe(df_fonds, use_container_width=True)
