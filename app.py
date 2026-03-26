@@ -386,10 +386,19 @@ if not available_fonds:
 
 # Filtrer les 30 derniers jours calendaires (≈ 1 mois)
 month_start = prices_eur.index[-1] - timedelta(days=30)
-prices_month_fonds = prices_eur[available_fonds][prices_eur.index >= month_start]
+prices_month_fonds = prices_eur[available_fonds][prices_eur.index >= month_start].dropna(how='all', axis=1).sort_index()
 
-if len(prices_month_fonds) < 2:
-    st.error("Pas assez de données pour calculer la performance sur le mois.")
+st.write("Nombre de points de données par fond :", prices_month_fonds.count())
+
+# Vérifier qu'il reste des fonds après nettoyage
+available_fonds_after_clean = prices_month_fonds.columns.tolist()
+if not available_fonds_after_clean:
+    st.error("Aucun fond n'a de données suffisantes pour le mois.")
+    st.stop()
+
+# Vérifier qu'il y a au moins 2 points de données pour chaque fond
+if (prices_month_fonds.count() < 2).any():
+    st.error("Certains fonds n'ont pas assez de données pour calculer la performance.")
     st.stop()
 
 # Calculer la performance
@@ -408,6 +417,7 @@ df_fonds = pd.DataFrame({
 }).reset_index(drop=True)
 
 st.dataframe(df_fonds, use_container_width=True)
+
 # =====================
 # Texte explicatif
 # =====================
