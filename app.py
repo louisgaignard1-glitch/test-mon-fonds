@@ -121,7 +121,7 @@ with st.expander("🔍 Vérification des poids effectifs du portefeuille"):
     total_effectif = weights.sum() * 100
     st.caption(f"Total poids cible : {total_cible:.1f}% | Total poids effectif : {total_effectif:.1f}%")
 
-usd_tickers = ["UBER", "GOOGL", "META", "HWM", "AMZN"]
+usd_tickers = [ "GOOGL", "META", "HWM", "AMZN"]
 
 # =====================
 # Télécharger EUR/USD
@@ -258,7 +258,7 @@ st.plotly_chart(fig, use_container_width=True)
 # =====================
 # TOP 5 LIGNES — SEMAINE
 # =====================
-st.subheader("🏆 Top 5 des meilleures lignes sur la semaine")
+st.subheader("🏆 Les 5 lignes les plus performantes sur la semaine")
 
 # Mapping noms lisibles
 ticker_names = {
