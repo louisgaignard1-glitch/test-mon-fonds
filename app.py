@@ -72,7 +72,7 @@ if prices.empty:
 # =====================
 weights = pd.Series(allocation)
 weights = weights[weights.index.isin(prices.columns)]
-weights = weights / weights.sum()   
+weights = weights / weights.sum()
 if weights.empty:
     st.error("Aucun poids valide n'a pu être calculé. Vérifiez les tickers et les allocations.")
     st.stop()
@@ -178,12 +178,12 @@ if bench_index.empty:
     st.stop()
 
 common_index = portfolio_index.index.intersection(bench_index.index)
-
 portfolio_index = portfolio_index.loc[common_index]
 portfolio_index_hedged = portfolio_index_hedged.loc[common_index]
 bench_index = bench_index.loc[common_index]
+
 # =====================
-# Graphique
+# Graphique principal
 # =====================
 fig = go.Figure()
 fig.add_trace(go.Scatter(
@@ -212,7 +212,77 @@ fig.update_layout(
 st.plotly_chart(fig, use_container_width=True)
 
 # =====================
-# Texte explicatif 
+# TOP 5 LIGNES — SEMAINE
+# =====================
+st.subheader("🏆 Top 5 des meilleures lignes sur la semaine")
+
+# Filtrer les 7 derniers jours calendaires (≈ 5 jours ouvrés)
+week_start = prices_eur.index[-1] - timedelta(days=7)
+prices_week = prices_eur[prices_eur.index >= week_start]
+
+if len(prices_week) >= 2:
+    # Performance de chaque ligne sur la semaine (premier prix dispo → dernier)
+    weekly_perf = (prices_week.iloc[-1] / prices_week.iloc[0] - 1) * 100
+    weekly_perf = weekly_perf.dropna().sort_values(ascending=False)
+    top5 = weekly_perf.head(5)
+
+    col_bar, col_line = st.columns(2)
+
+    # --- Graphique barres ---
+    with col_bar:
+        colors = ['#2ecc71' if v >= 0 else '#e74c3c' for v in top5.values]
+        fig_bar = go.Figure(go.Bar(
+            x=top5.index,
+            y=top5.values,
+            marker_color=colors,
+            text=[f"{v:.2f}%" for v in top5.values],
+            textposition='outside'
+        ))
+        fig_bar.update_layout(
+            title="Performance hebdomadaire (%)",
+            template="plotly_white",
+            yaxis_title="%",
+            height=400,
+            showlegend=False
+        )
+        st.plotly_chart(fig_bar, use_container_width=True)
+
+    # --- Graphique lignes (évolution normalisée sur la semaine) ---
+    with col_line:
+        fig_line = go.Figure()
+        for ticker in top5.index:
+            if ticker in prices_week.columns:
+                series = prices_week[ticker].dropna()
+                if len(series) >= 2:
+                    normalized = (series / series.iloc[0]) * 100
+                    fig_line.add_trace(go.Scatter(
+                        x=normalized.index,
+                        y=normalized,
+                        name=ticker,
+                        mode='lines',
+                        line=dict(width=2)
+                    ))
+        fig_line.update_layout(
+            title="Évolution normalisée sur la semaine (base 100)",
+            template="plotly_white",
+            yaxis_title="Base 100",
+            height=400
+        )
+        st.plotly_chart(fig_line, use_container_width=True)
+
+    # Tableau récapitulatif
+    st.markdown("**Détail du Top 5**")
+    df_top5 = pd.DataFrame({
+        "Ticker": top5.index,
+        "Performance semaine": [f"{v:.2f}%" for v in top5.values],
+        "Poids dans le portefeuille": [f"{allocation.get(t, 0)*100:.1f}%" for t in top5.index]
+    }).reset_index(drop=True)
+    st.dataframe(df_top5, use_container_width=True)
+else:
+    st.warning("Pas assez de données disponibles pour calculer le top 5 hebdomadaire.")
+
+# =====================
+# Texte explicatif
 # =====================
 st.subheader("📊 Composition du benchmark")
 st.markdown("""
@@ -222,20 +292,18 @@ Le benchmark composite reflète la structure multi-actifs du portefeuille :
 • 25% Obligations américaines à long terme → obligations
 • 10% Immobilier américain → immobilier
 • 5% MSCI Emerging Markets → actions émergentes
-Ce benchmark permet une comparaison plus réaliste qu’un indice actions pur.
+Ce benchmark permet une comparaison plus réaliste qu'un indice actions pur.
 """)
 st.subheader("💱 Couverture FX USD")
-
 st.markdown("""
 Cette simulation couvre le risque de change des actions américaines (ex: UBER, GOOGL) en utilisant un **contrat forward** pour figer le taux EUR/USD.
 
 **Formule appliquée :**
 Return hedgé = Return en USD − Variation du taux EUR/USD
 
-→ Cela neutralise l’impact des fluctuations du change, comme si vous aviez verrouillé le taux de change initial.
+→ Cela neutralise l'impact des fluctuations du change, comme si vous aviez verrouillé le taux de change initial.
 *(Simplification : pas de coût de couverture inclus.)*
 """)
-
 
 # =====================
 # Calcul des performances
