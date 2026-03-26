@@ -70,12 +70,56 @@ if prices.empty:
 # =====================
 # Construction portefeuille
 # =====================
-weights = pd.Series(allocation)
-weights = weights[weights.index.isin(prices.columns)]
-weights = weights / weights.sum()
+weights_raw = pd.Series(allocation)
+
+# Identifier les actifs manquants (non téléchargés)
+missing = weights_raw[~weights_raw.index.isin(prices.columns)]
+present = weights_raw[weights_raw.index.isin(prices.columns)]
+
+if not missing.empty:
+    missing_pct = missing.sum() * 100
+    st.warning(
+        f"⚠️ **{len(missing)} actif(s) exclus de la construction du portefeuille** "
+        f"(représentant {missing_pct:.1f}% de l'allocation cible) :\n"
+        + "\n".join([f"- `{t}` ({w*100:.1f}%)" for t, w in missing.items()])
+    )
+
+# Arrêt si plus de 20% de l'allocation est manquante
+if missing.sum() > 0.20:
+    st.error("Plus de 20% de l'allocation est manquante. Vérifiez les tickers des fonds.")
+    st.stop()
+
+# Renormalisation des poids sur les actifs disponibles
+weights = present / present.sum()
+
 if weights.empty:
     st.error("Aucun poids valide n'a pu être calculé. Vérifiez les tickers et les allocations.")
     st.stop()
+
+# Tableau de contrôle des poids effectifs
+with st.expander("🔍 Vérification des poids effectifs du portefeuille"):
+    ticker_names_display = {
+        "TTE.PA": "TotalEnergies", "MC.PA": "LVMH", "INGA.AS": "ING Groep",
+        "SAP.DE": "SAP", "ACLN.SW": "ACLN", "THEON.AS": "Theon Intl",
+        "BOI.PA": "Boiron", "EOAN.DE": "E.ON", "GOOGL": "Alphabet",
+        "META": "Meta", "HWM": "Howmet", "AMZN": "Amazon",
+        "0P0000ZWX4.F": "Helium Fund Perf A EUR",
+        "0P0001861S.F": "Eleva Abs Ret Eurp S EUR",
+        "0P00000M6C.F": "R-co Conviction Credit Euro",
+        "0P00008ESK.F": "AXAIMFIIS US Short Dur HY",
+        "0P0000A6ZG.F": "Immobilier 21 AC",
+        "0P0000WHLW.F": "GemEquity R",
+    }
+    df_weights = pd.DataFrame({
+        "Actif": [ticker_names_display.get(t, t) for t in weights.index],
+        "Ticker": weights.index,
+        "Poids cible": [f"{allocation[t]*100:.1f}%" for t in weights.index],
+        "Poids effectif": [f"{w*100:.1f}%" for w in weights.values],
+    }).reset_index(drop=True)
+    st.dataframe(df_weights, use_container_width=True)
+    total_cible = sum(allocation.values()) * 100
+    total_effectif = weights.sum() * 100
+    st.caption(f"Total poids cible : {total_cible:.1f}% | Total poids effectif : {total_effectif:.1f}%")
 
 usd_tickers = ["UBER", "GOOGL", "META", "HWM", "AMZN"]
 
