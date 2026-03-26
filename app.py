@@ -216,6 +216,50 @@ st.plotly_chart(fig, use_container_width=True)
 # =====================
 st.subheader("🏆 Top 5 des meilleures lignes sur la semaine")
 
+# Mapping noms lisibles
+ticker_names = {
+    "TTE.PA": "TotalEnergies",
+    "MC.PA": "LVMH",
+    "INGA.AS": "ING Groep",
+    "SAP.DE": "SAP",
+    "ACLN.SW": "ACLN",
+    "THEON.AS": "Theon Intl",
+    "BOI.PA": "Boiron",
+    "EOAN.DE": "E.ON",
+    "GOOGL": "Alphabet",
+    "META": "Meta",
+    "HWM": "Howmet",
+    "AMZN": "Amazon",
+    "0P0000ZWX4.F": "Helium Fund Perf A EUR",
+    "0P0001861S.F": "Eleva Abs Ret Eurp S EUR",
+    "0P00000M6C.F": "R-co Conviction Credit Euro",
+    "0P00008ESK.F": "AXAIMFIIS US Short Dur HY",
+    "0P0000A6ZG.F": "Immobilier 21 AC",
+    "0P0000WHLW.F": "GemEquity R",
+}
+
+# Mapping noms lisibles
+ticker_names = {
+    "TTE.PA": "TotalEnergies",
+    "MC.PA": "LVMH",
+    "INGA.AS": "ING Group",
+    "SAP.DE": "SAP",
+    "ACLN.SW": "ACLN",
+    "THEON.AS": "Theon Intl",
+    "BOI.PA": "Boiron",
+    "EOAN.DE": "E.ON",
+    "GOOGL": "Alphabet",
+    "META": "Meta",
+    "HWM": "Howmet",
+    "AMZN": "Amazon",
+    "0P0000ZWX4.F": "Helium Fund Perf A EUR",
+    "0P0001861S.F": "Eleva Abs Ret Eurp S EUR",
+    "0P00000M6C.F": "R-co Conviction Credit Euro",
+    "0P00008ESK.F": "AXAIMFIIS US SD HY EUR H",
+    "0P0000A6ZG.F": "Immobilier 21 AC",
+    "0P0000WHLW.F": "GemEquity R",
+}
+
 # Filtrer les 7 derniers jours calendaires (≈ 5 jours ouvrés)
 week_start = prices_eur.index[-1] - timedelta(days=7)
 prices_week = prices_eur[prices_eur.index >= week_start]
@@ -228,11 +272,13 @@ if len(prices_week) >= 2:
 
     col_bar, col_line = st.columns(2)
 
+    top5_labels = [ticker_names.get(t, t) for t in top5.index]
+
     # --- Graphique barres ---
     with col_bar:
         colors = ['#2ecc71' if v >= 0 else '#e74c3c' for v in top5.values]
         fig_bar = go.Figure(go.Bar(
-            x=top5.index,
+            x=top5_labels,
             y=top5.values,
             marker_color=colors,
             text=[f"{v:.2f}%" for v in top5.values],
@@ -258,7 +304,7 @@ if len(prices_week) >= 2:
                     fig_line.add_trace(go.Scatter(
                         x=normalized.index,
                         y=normalized,
-                        name=ticker,
+                        name=ticker_names.get(ticker, ticker),
                         mode='lines',
                         line=dict(width=2)
                     ))
@@ -273,6 +319,7 @@ if len(prices_week) >= 2:
     # Tableau récapitulatif
     st.markdown("**Détail du Top 5**")
     df_top5 = pd.DataFrame({
+        "Actif": top5_labels,
         "Ticker": top5.index,
         "Performance semaine": [f"{v:.2f}%" for v in top5.values],
         "Poids dans le portefeuille": [f"{allocation.get(t, 0)*100:.1f}%" for t in top5.index]
