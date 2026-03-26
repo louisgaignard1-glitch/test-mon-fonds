@@ -269,29 +269,7 @@ st.plotly_chart(fig, use_container_width=True)
 # =====================
 # TOP 5 LIGNES — SEMAINE
 # =====================
-st.subheader("🏆 Les 5 lignes les plus performantes sur la semaine")
-
-# Mapping noms lisibles
-ticker_names = {
-    "TTE.PA": "TotalEnergies",
-    "MC.PA": "LVMH",
-    "INGA.AS": "ING Groep",
-    "SAP.DE": "SAP",
-    "ACLN.SW": "ACLN",
-    "THEON.AS": "Theon Intl",
-    "BOI.PA": "Boiron",
-    "EOAN.DE": "E.ON",
-    "GOOGL": "Alphabet",
-    "META": "Meta",
-    "HWM": "Howmet",
-    "AMZN": "Amazon",
-    "0P0000ZWX4.F": "Helium Fund Perf A EUR",
-    "0P0001861S.F": "Eleva Abs Ret Eurp S EUR",
-    "0P00000M6C.F": "R-co Conviction Credit Euro",
-    "0P00008ESK.F": "AXAIMFIIS US Short Dur HY",
-    "0P0000A6ZG.F": "Immobilier 21 AC",
-    "0P0000WHLW.F": "GemEquity R",
-}
+st.subheader("🏆 Les 5 lignes les plus performantes sur le dernier mois")
 
 # Mapping noms lisibles
 ticker_names = {
@@ -315,15 +293,15 @@ ticker_names = {
     "0P0000WHLW.F": "GemEquity R",
 }
 
-# Filtrer les 7 derniers jours calendaires (≈ 5 jours ouvrés)
-week_start = prices_eur.index[-1] - timedelta(days=7)
-prices_week = prices_eur[prices_eur.index >= week_start]
+# Filtrer les 30 derniers jours calendaires (≈ 1 mois)
+month_start = prices_eur.index[-1] - timedelta(days=30)
+prices_month = prices_eur[prices_eur.index >= month_start]
 
-if len(prices_week) >= 2:
-    # Performance de chaque ligne sur la semaine (premier prix dispo → dernier)
-    weekly_perf = (prices_week.iloc[-1] / prices_week.iloc[0] - 1) * 100
-    weekly_perf = weekly_perf.dropna().sort_values(ascending=False)
-    top5 = weekly_perf.head(5)
+if len(prices_month) >= 2:
+    # Performance de chaque ligne sur le mois (premier prix dispo → dernier)
+    monthly_perf = (prices_month.iloc[-1] / prices_month.iloc[0] - 1) * 100
+    monthly_perf = monthly_perf.dropna().sort_values(ascending=False)
+    top5 = monthly_perf.head(5)
 
     col_bar, col_line = st.columns(2)
 
@@ -340,7 +318,7 @@ if len(prices_week) >= 2:
             textposition='outside'
         ))
         fig_bar.update_layout(
-            title="Performance hebdomadaire (%)",
+            title="Performance mensuelle (%)",
             template="plotly_white",
             yaxis_title="%",
             height=400,
@@ -348,12 +326,12 @@ if len(prices_week) >= 2:
         )
         st.plotly_chart(fig_bar, use_container_width=True)
 
-    # --- Graphique lignes (évolution normalisée sur la semaine) ---
+    # --- Graphique lignes (évolution normalisée sur le mois) ---
     with col_line:
         fig_line = go.Figure()
         for ticker in top5.index:
-            if ticker in prices_week.columns:
-                series = prices_week[ticker].dropna()
+            if ticker in prices_month.columns:
+                series = prices_month[ticker].dropna()
                 if len(series) >= 2:
                     normalized = (series / series.iloc[0]) * 100
                     fig_line.add_trace(go.Scatter(
@@ -364,7 +342,7 @@ if len(prices_week) >= 2:
                         line=dict(width=2)
                     ))
         fig_line.update_layout(
-            title="Évolution normalisée sur la semaine (base 100)",
+            title="Évolution normalisée sur le mois (base 100)",
             template="plotly_white",
             yaxis_title="Base 100",
             height=400
@@ -376,12 +354,12 @@ if len(prices_week) >= 2:
     df_top5 = pd.DataFrame({
         "Actif": top5_labels,
         "Ticker": top5.index,
-        "Performance semaine": [f"{v:.2f}%" for v in top5.values],
+        "Performance mois": [f"{v:.2f}%" for v in top5.values],
         "Poids dans le portefeuille": [f"{allocation.get(t, 0)*100:.1f}%" for t in top5.index]
     }).reset_index(drop=True)
     st.dataframe(df_top5, use_container_width=True)
 else:
-    st.warning("Pas assez de données disponibles pour calculer le top 5 hebdomadaire.")
+    st.warning("Pas assez de données disponibles pour calculer le top 5 mensuel.")
 
 # =====================
 # Performance des fonds sur la dernière semaine
