@@ -267,7 +267,7 @@ fig.update_layout(
 st.plotly_chart(fig, use_container_width=True)
 
 # =====================
-# TOP 5 LIGNES — SEMAINE
+# Les 5 lignes les plus performantes sur le dernier mois
 # =====================
 st.subheader("🏆 Les 5 lignes les plus performantes sur le dernier mois")
 
@@ -296,6 +296,9 @@ ticker_names = {
 # Filtrer les 30 derniers jours calendaires (≈ 1 mois)
 month_start = prices_eur.index[-1] - timedelta(days=30)
 prices_month = prices_eur[prices_eur.index >= month_start]
+
+# Remplacer les valeurs manquantes par la dernière valeur disponible (forward fill)
+prices_month = prices_month.ffill()
 
 if len(prices_month) >= 2:
     # Performance de chaque ligne sur le mois (premier prix dispo → dernier)
@@ -331,7 +334,7 @@ if len(prices_month) >= 2:
         fig_line = go.Figure()
         for ticker in top5.index:
             if ticker in prices_month.columns:
-                series = prices_month[ticker].dropna()
+                series = prices_month[ticker]
                 if len(series) >= 2:
                     normalized = (series / series.iloc[0]) * 100
                     fig_line.add_trace(go.Scatter(
@@ -360,69 +363,6 @@ if len(prices_month) >= 2:
     st.dataframe(df_top5, use_container_width=True)
 else:
     st.warning("Pas assez de données disponibles pour calculer le top 5 mensuel.")
-
-
-# =====================
-# Performance des fonds sur le dernier mois
-# =====================
-st.subheader("📈 Performance des fonds sur le dernier mois")
-
-fond_tickers = [
-    "0P0000ZWX4.F",  # Helium Fund Perf A EUR
-    "0P0001861S.F",  # Eleva Abs Ret Eurp S EUR
-    "0P00000M6C.F",  # R-co Conviction Credit Euro
-    "0P00008ESK.F",  # AXAIMFIIS US Short Dur HY
-    "0P0000A6ZG.F",  # Immobilier 21 AC
-    "0P0000WHLW.F"   # GemEquity R
-]
-
-# Vérifier quels tickers sont disponibles
-available_fonds = [t for t in fond_tickers if t in prices_eur.columns]
-st.write("Fonds disponibles :", available_fonds)
-
-if not available_fonds:
-    st.error("Aucun fond disponible dans les données. Vérifiez les tickers.")
-    st.stop()
-
-# Filtrer les 30 derniers jours calendaires (≈ 1 mois)
-month_start = prices_eur.index[-1] - timedelta(days=30)
-prices_month_fonds = prices_eur[available_fonds].loc[month_start:]
-
-# Remplacer les valeurs manquantes par la dernière valeur disponible (forward fill)
-prices_month_fonds = prices_month_fonds.ffill()
-
-# Vérifier les données après remplissage
-st.write("Données après remplissage des valeurs manquantes :", prices_month_fonds)
-
-# Vérifier qu'il reste des fonds après traitement
-available_fonds_after_fill = prices_month_fonds.columns.tolist()
-if not available_fonds_after_fill:
-    st.error("Aucun fond n'a de données après traitement.")
-    st.stop()
-
-# Calculer la performance pour chaque fond
-monthly_perf_fonds = pd.Series(index=available_fonds_after_fill, dtype=float)
-
-for ticker in available_fonds_after_fill:
-    series = prices_month_fonds[ticker]
-    if len(series) >= 2 and not series.isna().all():
-        perf = (series.iloc[-1] / series.iloc[0] - 1) * 100
-        monthly_perf_fonds[ticker] = perf
-
-monthly_perf_fonds = monthly_perf_fonds.dropna()
-
-if monthly_perf_fonds.empty:
-    st.error("Aucune performance calculable. Vérifiez les données.")
-    st.stop()
-
-# Afficher le tableau
-df_fonds = pd.DataFrame({
-    "Fond": [ticker_names.get(t, t) for t in monthly_perf_fonds.index],
-    "Ticker": monthly_perf_fonds.index,
-    "Performance mois": [f"{v:.2f}%" for v in monthly_perf_fonds.values],
-}).reset_index(drop=True)
-
-st.dataframe(df_fonds, use_container_width=True)
 
 # =====================
 # Texte explicatif
