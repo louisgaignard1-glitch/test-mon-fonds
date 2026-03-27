@@ -223,8 +223,7 @@ def build_perf_chart(portfolio_index: pd.Series, bench_index: pd.Series) -> byte
     ax.plot(b.index, (b - 1) * 100, color="#E74C3C", linewidth=1.2,
             linestyle="--", label="Benchmark composite", alpha=0.8)
 
-    ax.axhline(0, color=MID_GRAY.hexval() if hasattr(MID_GRAY, 'hexval') else "#BDC3C7",
-               linewidth=0.5, linestyle=":")
+    ax.axhline(0, color="#BDC3C7", linewidth=0.5, linestyle=":")
     ax.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.0f%%"))
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
@@ -590,4 +589,3 @@ def render_factsheet_section(
                 except Exception as e:
                     st.error(f"Erreur lors de la génération : {e}")
                     raise
-
