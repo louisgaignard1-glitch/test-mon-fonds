@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
-pip install openbb
+
 # =====================
 # OpenBB import (optionnel — graceful degradation si non installé)
 # =====================
