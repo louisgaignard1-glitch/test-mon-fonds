@@ -1,20 +1,18 @@
 """
 factsheet_export.py
 -------------------
-Module autonome à importer dans ton app Streamlit principale.
+Factsheet PDF style "maison de gestion" inspirée de la factsheet EdR.
+Utilise reportlab canvas pour un contrôle pixel-perfect.
 
-Usage dans portfolio_app.py :
+Usage dans app.py (coller à la fin) :
     from factsheet_export import render_factsheet_section
     render_factsheet_section(
-        portfolio_index_hedged,
-        bench_index,
-        portfolio_returns_hedged,
-        allocation,
-        ticker_names,
-        weights
+        portfolio_index_hedged, bench_index,
+        portfolio_returns_hedged, allocation,
+        ticker_names, weights
     )
 
-Dépendance à ajouter dans requirements.txt :
+requirements.txt :
     reportlab
     matplotlib
 """
@@ -23,569 +21,592 @@ import io
 import datetime
 import numpy as np
 import pandas as pd
+import streamlit as st
 import matplotlib
-matplotlib.use("Agg")  # backend non-interactif obligatoire dans Streamlit
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
-import streamlit as st
 
 from reportlab.lib.pagesizes import A4
-from reportlab.lib import colors
 from reportlab.lib.units import mm
-from reportlab.lib.styles import ParagraphStyle
-from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
-    HRFlowable, Image as RLImage
-)
-from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
+from reportlab.pdfgen import canvas as rl_canvas
+from reportlab.lib import colors
 
 
 # ─────────────────────────────────────────────
-# Palette couleurs
+# Palette — sobre, institutionnelle
 # ─────────────────────────────────────────────
-DARK_BLUE   = colors.HexColor("#0D1B2A")
-MID_BLUE    = colors.HexColor("#1B4F72")
-ACCENT_BLUE = colors.HexColor("#2E86C1")
-LIGHT_GRAY  = colors.HexColor("#F4F6F7")
-MID_GRAY    = colors.HexColor("#BDC3C7")
-TEXT_GRAY   = colors.HexColor("#566573")
-GREEN       = colors.HexColor("#1E8449")
-RED         = colors.HexColor("#C0392B")
-WHITE       = colors.white
-BLACK       = colors.black
+C_DARK   = colors.HexColor("#1A2B4A")   # bleu nuit header
+C_MID    = colors.HexColor("#2C4A7C")   # bleu moyen section titles
+C_ACCENT = colors.HexColor("#C8A951")   # or bande décorative (style EdR)
+C_LIGHT  = colors.HexColor("#EEF2F7")   # fond lignes paires tableaux
+C_BORDER = colors.HexColor("#C8D0DC")   # bordures tableaux
+C_TEXT   = colors.HexColor("#1A2B4A")   # texte principal
+C_MUTED  = colors.HexColor("#6B7A8D")   # texte secondaire
+C_GREEN  = colors.HexColor("#1B6B3A")
+C_RED    = colors.HexColor("#A0282A")
+C_WHITE  = colors.white
+
+W, H = A4          # 595 x 842 pts
+ML = 14 * mm       # marge gauche
+MR = 14 * mm       # marge droite
+CW = W - ML - MR   # largeur utile
 
 
 # ─────────────────────────────────────────────
-# Styles typographiques
+# Métriques
 # ─────────────────────────────────────────────
-def get_styles():
+def compute_metrics(port_idx, bench_idx, port_ret):
+    r = port_ret.dropna()
+    ann = 252
+
+    def perf_over(days):
+        cutoff = port_idx.index[-1] - pd.Timedelta(days=days)
+        s = port_idx[port_idx.index >= cutoff]
+        return (s.iloc[-1] / s.iloc[0] - 1) * 100 if len(s) > 1 else np.nan
+
+    ytd_start = pd.Timestamp(datetime.date.today().year, 1, 1)
+    s_ytd = port_idx[port_idx.index >= ytd_start]
+    perf_ytd = (s_ytd.iloc[-1] / s_ytd.iloc[0] - 1) * 100 if len(s_ytd) > 1 else np.nan
+
+    vol = r.std() * np.sqrt(ann) * 100
+    rf  = 0.035 / ann
+    sharpe   = (r.mean() - rf) / r.std() * np.sqrt(ann) if r.std() > 0 else np.nan
+    down_std = r[r < 0].std() * np.sqrt(ann)
+    sortino  = r.mean() * ann / down_std if down_std > 0 else np.nan
+    cum = (1 + r).cumprod()
+    dd  = ((cum - cum.cummax()) / cum.cummax()).min() * 100
+    ann_ret = r.mean() * ann * 100
+    calmar  = ann_ret / abs(dd) if dd != 0 else np.nan
+
+    common  = port_ret.index.intersection(bench_idx.index)
+    br      = bench_idx.loc[common].pct_change().dropna()
+    pr      = port_ret.loc[br.index]
+    beta    = np.cov(pr, br)[0, 1] / np.var(br) if len(br) > 5 else np.nan
+    corr    = np.corrcoef(pr, br)[0, 1] if len(br) > 5 else np.nan
+    te      = (pr - br).std() * np.sqrt(ann) * 100
+    ir      = (pr - br).mean() * ann / ((pr - br).std() * np.sqrt(ann)) if (pr - br).std() > 0 else np.nan
+
+    # Perf benchmark
+    def bench_perf(days):
+        cutoff = bench_idx.index[-1] - pd.Timedelta(days=days)
+        s = bench_idx[bench_idx.index >= cutoff]
+        return (s.iloc[-1] / s.iloc[0] - 1) * 100 if len(s) > 1 else np.nan
+
+    bench_ytd_s = bench_idx[bench_idx.index >= ytd_start]
+    bench_ytd   = (bench_ytd_s.iloc[-1] / bench_ytd_s.iloc[0] - 1) * 100 if len(bench_ytd_s) > 1 else np.nan
+
     return {
-        "title": ParagraphStyle(
-            "title", fontName="Helvetica-Bold", fontSize=22,
-            textColor=WHITE, alignment=TA_LEFT, leading=26
-        ),
-        "subtitle": ParagraphStyle(
-            "subtitle", fontName="Helvetica", fontSize=10,
-            textColor=colors.HexColor("#A9CCE3"), alignment=TA_LEFT, leading=14
-        ),
-        "section": ParagraphStyle(
-            "section", fontName="Helvetica-Bold", fontSize=10,
-            textColor=DARK_BLUE, spaceBefore=6, spaceAfter=4,
-            borderPad=2, leading=14,
-            backColor=LIGHT_GRAY, leftIndent=4
-        ),
-        "body": ParagraphStyle(
-            "body", fontName="Helvetica", fontSize=8,
-            textColor=TEXT_GRAY, leading=12
-        ),
-        "metric_label": ParagraphStyle(
-            "metric_label", fontName="Helvetica", fontSize=7,
-            textColor=TEXT_GRAY, alignment=TA_CENTER, leading=10
-        ),
-        "metric_value": ParagraphStyle(
-            "metric_value", fontName="Helvetica-Bold", fontSize=13,
-            textColor=DARK_BLUE, alignment=TA_CENTER, leading=16
-        ),
-        "metric_value_green": ParagraphStyle(
-            "metric_value_green", fontName="Helvetica-Bold", fontSize=13,
-            textColor=GREEN, alignment=TA_CENTER, leading=16
-        ),
-        "metric_value_red": ParagraphStyle(
-            "metric_value_red", fontName="Helvetica-Bold", fontSize=13,
-            textColor=RED, alignment=TA_CENTER, leading=16
-        ),
-        "table_header": ParagraphStyle(
-            "table_header", fontName="Helvetica-Bold", fontSize=7,
-            textColor=WHITE, alignment=TA_CENTER
-        ),
-        "table_cell": ParagraphStyle(
-            "table_cell", fontName="Helvetica", fontSize=7,
-            textColor=DARK_BLUE, alignment=TA_LEFT
-        ),
-        "table_cell_right": ParagraphStyle(
-            "table_cell_right", fontName="Helvetica", fontSize=7,
-            textColor=DARK_BLUE, alignment=TA_RIGHT
-        ),
-        "disclaimer": ParagraphStyle(
-            "disclaimer", fontName="Helvetica-Oblique", fontSize=6,
-            textColor=MID_GRAY, alignment=TA_LEFT, leading=8
-        ),
+        "perf_ytd": perf_ytd, "perf_1m": perf_over(30),
+        "perf_3m": perf_over(91), "perf_1y": perf_over(365),
+        "perf_3y": perf_over(3*365), "perf_total": (port_idx.iloc[-1] / port_idx.iloc[0] - 1) * 100,
+        "ann_ret": ann_ret, "vol": vol, "sharpe": sharpe,
+        "sortino": sortino, "max_dd": dd, "calmar": calmar,
+        "beta": beta, "corr": corr, "te": te, "ir": ir,
+        "bench_ytd": bench_ytd, "bench_1m": bench_perf(30),
+        "bench_3m": bench_perf(91), "bench_1y": bench_perf(365),
+        "bench_3y": bench_perf(3*365),
     }
 
 
-# ─────────────────────────────────────────────
-# Calcul des métriques de risque/perf
-# ─────────────────────────────────────────────
-def compute_metrics(portfolio_index: pd.Series,
-                    bench_index: pd.Series,
-                    portfolio_returns: pd.Series) -> dict:
-    """
-    Calcule les métriques clés depuis les séries de prix/rendements.
-    portfolio_index et bench_index : series indexées (1.0 à la date de début)
-    portfolio_returns : rendements journaliers du portefeuille hedgé
-    """
-    r = portfolio_returns.dropna()
-    ann_factor = 252
+def f(v, decimals=2, suffix=""):
+    if v is None or (isinstance(v, float) and np.isnan(v)):
+        return "n/a"
+    sign = "+" if v > 0 else ""
+    return f"{sign}{v:.{decimals}f}{suffix}"
 
-    # Perf cumulée
-    total_return = (portfolio_index.iloc[-1] / portfolio_index.iloc[0] - 1) * 100
+def fp(v, decimals=2):   # pct avec signe
+    return f(v, decimals, "%")
 
-    # Perf 1 an
-    idx_1y = portfolio_index[portfolio_index.index >= portfolio_index.index[-1] - pd.Timedelta(days=365)]
-    perf_1y = (idx_1y.iloc[-1] / idx_1y.iloc[0] - 1) * 100 if len(idx_1y) > 1 else np.nan
-
-    # Perf YTD
-    year_start = pd.Timestamp(datetime.date.today().year, 1, 1)
-    idx_ytd = portfolio_index[portfolio_index.index >= year_start]
-    perf_ytd = (idx_ytd.iloc[-1] / idx_ytd.iloc[0] - 1) * 100 if len(idx_ytd) > 1 else np.nan
-
-    # Volatilité annualisée
-    vol = r.std() * np.sqrt(ann_factor) * 100
-
-    # Sharpe (risk-free = 3.5% approximation BCE 2024)
-    rf_daily = 0.035 / ann_factor
-    excess = r - rf_daily
-    sharpe = (excess.mean() / r.std() * np.sqrt(ann_factor)) if r.std() > 0 else np.nan
-
-    # Sortino
-    downside = r[r < 0].std() * np.sqrt(ann_factor)
-    sortino = (r.mean() * ann_factor / downside) if downside > 0 else np.nan
-
-    # Max Drawdown
-    cumulative = (1 + r).cumprod()
-    rolling_max = cumulative.cummax()
-    drawdown = (cumulative - rolling_max) / rolling_max
-    max_dd = drawdown.min() * 100
-
-    # Calmar
-    ann_return = r.mean() * ann_factor * 100
-    calmar = (ann_return / abs(max_dd)) if max_dd != 0 else np.nan
-
-    # Beta vs benchmark
-    common = portfolio_returns.index.intersection(bench_index.index)
-    bench_r = bench_index.loc[common].pct_change().dropna()
-    port_r  = portfolio_returns.loc[bench_r.index]
-    if len(bench_r) > 10:
-        cov = np.cov(port_r, bench_r)
-        beta = cov[0, 1] / cov[1, 1] if cov[1, 1] > 0 else np.nan
-        corr = np.corrcoef(port_r, bench_r)[0, 1]
-    else:
-        beta, corr = np.nan, np.nan
-
-    # Tracking Error
-    diff = port_r - bench_r
-    tracking_error = diff.std() * np.sqrt(ann_factor) * 100
-
-    # Information Ratio
-    ir = (diff.mean() * ann_factor / (diff.std() * np.sqrt(ann_factor))) if diff.std() > 0 else np.nan
-
-    return {
-        "total_return": total_return,
-        "perf_1y": perf_1y,
-        "perf_ytd": perf_ytd,
-        "ann_return": ann_return,
-        "volatility": vol,
-        "sharpe": sharpe,
-        "sortino": sortino,
-        "max_drawdown": max_dd,
-        "calmar": calmar,
-        "beta": beta,
-        "correlation": corr,
-        "tracking_error": tracking_error,
-        "information_ratio": ir,
-    }
-
-
-def fmt(val, suffix="", decimals=2, is_pct=False):
-    """Formate une valeur numérique, gère les NaN."""
-    if val is None or (isinstance(val, float) and np.isnan(val)):
-        return "N/A"
-    if is_pct:
-        suffix = "%"
-    return f"{val:.{decimals}f}{suffix}"
+def fx(v, decimals=2):   # ratio sans signe
+    if v is None or (isinstance(v, float) and np.isnan(v)):
+        return "n/a"
+    return f"{v:.{decimals}f}x"
 
 
 # ─────────────────────────────────────────────
-# Génération des graphiques matplotlib → bytes
+# Graphiques matplotlib → bytes PNG
 # ─────────────────────────────────────────────
-def build_perf_chart(portfolio_index: pd.Series, bench_index: pd.Series) -> bytes:
-    """Graphique performance cumulée portefeuille hedgé vs benchmark."""
-    fig, ax = plt.subplots(figsize=(7.2, 2.8))
-    fig.patch.set_facecolor("white")
-    ax.set_facecolor("white")
+PLOT_STYLE = {
+    "figure.facecolor": "white", "axes.facecolor": "white",
+    "axes.spines.top": False, "axes.spines.right": False,
+    "axes.spines.left": True, "axes.spines.bottom": True,
+    "axes.edgecolor": "#C8D0DC", "axes.linewidth": 0.6,
+    "xtick.color": "#6B7A8D", "ytick.color": "#6B7A8D",
+    "xtick.labelsize": 6.5, "ytick.labelsize": 6.5,
+    "grid.color": "#E8ECF2", "grid.linewidth": 0.4,
+}
 
-    common = portfolio_index.index.intersection(bench_index.index)
-    p = portfolio_index.loc[common]
-    b = bench_index.loc[common]
-
-    ax.plot(p.index, (p - 1) * 100, color="#2E86C1", linewidth=1.5, label="Portefeuille hedgé USD")
-    ax.fill_between(p.index, (p - 1) * 100, alpha=0.08, color="#2E86C1")
-    ax.plot(b.index, (b - 1) * 100, color="#E74C3C", linewidth=1.2,
-            linestyle="--", label="Benchmark composite", alpha=0.8)
-
-    ax.axhline(0, color="#BDC3C7", linewidth=0.5, linestyle=":")
-    ax.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.0f%%"))
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    ax.spines["left"].set_color("#E0E0E0")
-    ax.spines["bottom"].set_color("#E0E0E0")
-    ax.tick_params(labelsize=7, colors="#566573")
-    ax.legend(fontsize=7, framealpha=0, loc="upper left")
-    ax.set_title("Performance cumulée (base 0%)", fontsize=8, color="#0D1B2A", pad=6)
-
-    plt.tight_layout(pad=0.5)
+def _fig_to_bytes(fig):
     buf = io.BytesIO()
-    plt.savefig(buf, format="png", dpi=160, bbox_inches="tight")
+    fig.savefig(buf, format="png", dpi=96, bbox_inches="tight")
     plt.close(fig)
     buf.seek(0)
     return buf.read()
 
 
-def build_drawdown_chart(portfolio_returns: pd.Series) -> bytes:
+def build_perf_chart(port_idx, bench_idx, w_pts, h_pts):
+    """Graphique performance cumulée — courbe portfolio + benchmark."""
+    with plt.rc_context(PLOT_STYLE):
+        fig, ax = plt.subplots(figsize=(w_pts / 72, h_pts / 72))
+        common = port_idx.index.intersection(bench_idx.index)
+        p = (port_idx.loc[common] - 1) * 100
+        b = (bench_idx.loc[common] - 1) * 100
+        ax.plot(p.index, p, color="#2C4A7C", linewidth=1.3,
+                label="Portefeuille hedgé USD", zorder=3)
+        ax.fill_between(p.index, p, alpha=0.07, color="#2C4A7C")
+        ax.plot(b.index, b, color="#C8A951", linewidth=1.0,
+                linestyle="--", label="Benchmark composite", alpha=0.85, zorder=2)
+        ax.axhline(0, color="#C8D0DC", linewidth=0.5, linestyle=":")
+        ax.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.0f%%"))
+        ax.grid(True, axis="y")
+        ax.legend(fontsize=6.5, framealpha=0, loc="upper left",
+                  handlelength=1.5, handletextpad=0.5)
+        plt.tight_layout(pad=0.3)
+        return _fig_to_bytes(fig)
+
+
+def build_drawdown_chart(port_ret, w_pts, h_pts):
     """Graphique drawdown."""
-    r = portfolio_returns.dropna()
-    cumulative = (1 + r).cumprod()
-    rolling_max = cumulative.cummax()
-    drawdown = ((cumulative - rolling_max) / rolling_max) * 100
-
-    fig, ax = plt.subplots(figsize=(7.2, 1.8))
-    fig.patch.set_facecolor("white")
-    ax.set_facecolor("white")
-
-    ax.fill_between(drawdown.index, drawdown, 0, color="#C0392B", alpha=0.6)
-    ax.plot(drawdown.index, drawdown, color="#C0392B", linewidth=0.8)
-    ax.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.0f%%"))
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    ax.spines["left"].set_color("#E0E0E0")
-    ax.spines["bottom"].set_color("#E0E0E0")
-    ax.tick_params(labelsize=7, colors="#566573")
-    ax.set_title("Drawdown", fontsize=8, color="#0D1B2A", pad=4)
-
-    plt.tight_layout(pad=0.5)
-    buf = io.BytesIO()
-    plt.savefig(buf, format="png", dpi=160, bbox_inches="tight")
-    plt.close(fig)
-    buf.seek(0)
-    return buf.read()
+    with plt.rc_context(PLOT_STYLE):
+        fig, ax = plt.subplots(figsize=(w_pts / 72, h_pts / 72))
+        cum = (1 + port_ret.dropna()).cumprod()
+        dd  = ((cum - cum.cummax()) / cum.cummax()) * 100
+        ax.fill_between(dd.index, dd, 0, color="#A0282A", alpha=0.55)
+        ax.plot(dd.index, dd, color="#A0282A", linewidth=0.7)
+        ax.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.0f%%"))
+        ax.grid(True, axis="y")
+        plt.tight_layout(pad=0.3)
+        return _fig_to_bytes(fig)
 
 
-def build_allocation_chart(allocation: dict, ticker_names: dict, weights: pd.Series) -> bytes:
-    """Donut chart allocation effective."""
-    labels = [ticker_names.get(t, t) for t in weights.index]
-    sizes  = [w * 100 for w in weights.values]
-
-    # Grouper les petites positions (<3%) dans "Autres"
-    threshold = 3.0
-    main_labels, main_sizes, other_size = [], [], 0.0
-    for l, s in zip(labels, sizes):
-        if s >= threshold:
-            main_labels.append(l)
-            main_sizes.append(s)
+def build_monthly_bar_chart(port_ret, w_pts, h_pts):
+    """Barres des performances mensuelles de l'année en cours."""
+    with plt.rc_context(PLOT_STYLE):
+        fig, ax = plt.subplots(figsize=(w_pts / 72, h_pts / 72))
+        year = datetime.date.today().year
+        monthly = port_ret[port_ret.index.year == year].resample("ME").apply(
+            lambda x: (1 + x).prod() - 1
+        ) * 100
+        if monthly.empty:
+            ax.text(0.5, 0.5, "Pas de données", ha="center", va="center",
+                    transform=ax.transAxes, fontsize=7, color="#6B7A8D")
         else:
-            other_size += s
-    if other_size > 0:
-        main_labels.append(f"Autres (<{threshold:.0f}%)")
-        main_sizes.append(other_size)
-
-    palette = [
-        "#2E86C1", "#1B4F72", "#148F77", "#1E8449", "#B7950B",
-        "#884EA0", "#CB4335", "#D35400", "#717D7E", "#2C3E50",
-        "#2471A3", "#0E6655"
-    ]
-
-    fig, ax = plt.subplots(figsize=(3.6, 3.0))
-    fig.patch.set_facecolor("white")
-    wedges, texts, autotexts = ax.pie(
-        main_sizes,
-        labels=None,
-        autopct=lambda p: f"{p:.1f}%" if p >= 4 else "",
-        colors=palette[:len(main_sizes)],
-        wedgeprops=dict(width=0.55, edgecolor="white", linewidth=1.2),
-        startangle=90,
-        pctdistance=0.78
-    )
-    for at in autotexts:
-        at.set_fontsize(6)
-        at.set_color("white")
-
-    ax.legend(
-        wedges, main_labels,
-        loc="center left", bbox_to_anchor=(1.0, 0.5),
-        fontsize=6, framealpha=0,
-        handlelength=1.0, handleheight=1.0
-    )
-    ax.set_title("Allocation effective", fontsize=8, color="#0D1B2A", pad=4)
-
-    plt.tight_layout(pad=0.3)
-    buf = io.BytesIO()
-    plt.savefig(buf, format="png", dpi=160, bbox_inches="tight")
-    plt.close(fig)
-    buf.seek(0)
-    return buf.read()
+            colors_bar = ["#1B6B3A" if v >= 0 else "#A0282A" for v in monthly.values]
+            ax.bar(monthly.index, monthly.values, color=colors_bar,
+                   width=20, edgecolor="white", linewidth=0.3)
+            ax.axhline(0, color="#C8D0DC", linewidth=0.5)
+            ax.set_xticks(monthly.index)
+            ax.set_xticklabels([d.strftime("%b") for d in monthly.index], fontsize=6)
+            ax.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.1f%%"))
+            ax.grid(True, axis="y")
+        plt.tight_layout(pad=0.3)
+        return _fig_to_bytes(fig)
 
 
 # ─────────────────────────────────────────────
-# Assemblage du PDF
+# Primitives canvas
 # ─────────────────────────────────────────────
-def generate_factsheet_pdf(
-    portfolio_index_hedged: pd.Series,
-    bench_index: pd.Series,
-    portfolio_returns_hedged: pd.Series,
-    allocation: dict,
-    ticker_names: dict,
-    weights: pd.Series
-) -> bytes:
-    """
-    Génère la factsheet complète et retourne les bytes du PDF.
-    """
-    buf = io.BytesIO()
-    styles = get_styles()
-    metrics = compute_metrics(portfolio_index_hedged, bench_index, portfolio_returns_hedged)
+def draw_rect(c, x, y, w, h, fill=None, stroke=None, stroke_w=0.4):
+    c.saveState()
+    if fill:
+        c.setFillColor(fill)
+    if stroke:
+        c.setStrokeColor(stroke)
+        c.setLineWidth(stroke_w)
+    if fill and stroke:
+        c.rect(x, y, w, h, fill=1, stroke=1)
+    elif fill:
+        c.rect(x, y, w, h, fill=1, stroke=0)
+    elif stroke:
+        c.rect(x, y, w, h, fill=0, stroke=1)
+    c.restoreState()
 
-    W, H = A4
-    margin = 15 * mm
 
-    doc = SimpleDocTemplate(
-        buf,
-        pagesize=A4,
-        leftMargin=margin, rightMargin=margin,
-        topMargin=10 * mm, bottomMargin=12 * mm,
-        title="Factsheet Portefeuille Hedgé USD"
-    )
+def draw_text(c, x, y, text, font="Helvetica", size=8,
+              color=C_TEXT, align="left"):
+    c.saveState()
+    c.setFont(font, size)
+    c.setFillColor(color)
+    if align == "right":
+        c.drawRightString(x, y, str(text))
+    elif align == "center":
+        c.drawCentredString(x, y, str(text))
+    else:
+        c.drawString(x, y, str(text))
+    c.restoreState()
 
-    content = []
 
-    # ── Header Banner ──────────────────────────────────────────────
-    as_of = portfolio_index_hedged.index[-1].strftime("%d %B %Y")
-    header_data = [[
-        Paragraph(f"<b>Portfolio Hedgé USD</b>", styles["title"]),
-        Paragraph(f"Factsheet mensuelle<br/>Au {as_of}", styles["subtitle"])
-    ]]
-    header_table = Table(header_data, colWidths=[120 * mm, 60 * mm])
-    header_table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), DARK_BLUE),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("LEFTPADDING", (0, 0), (0, 0), 8),
-        ("RIGHTPADDING", (-1, 0), (-1, 0), 8),
-        ("TOPPADDING", (0, 0), (-1, -1), 8),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
-        ("ALIGN", (1, 0), (1, 0), "RIGHT"),
-    ]))
-    content.append(header_table)
-    content.append(Spacer(1, 5 * mm))
+def draw_section_title(c, x, y, title, w=None):
+    """Bande bleue + titre blanc style EdR."""
+    bw = w or CW
+    bh = 5.5 * mm
+    draw_rect(c, x, y, bw, bh, fill=C_MID)
+    # Barre or à gauche
+    draw_rect(c, x, y, 1.8 * mm, bh, fill=C_ACCENT)
+    draw_text(c, x + 3 * mm, y + 1.8 * mm, title,
+              font="Helvetica-Bold", size=7.5, color=C_WHITE)
+    return y - 2 * mm  # retourne y sous la section title
 
-    # ── Métriques clés (6 cartes) ──────────────────────────────────
-    content.append(Paragraph("Indicateurs clés", styles["section"]))
-    content.append(Spacer(1, 2 * mm))
 
-    def metric_style(val, is_pct=True):
-        """Choisit le style selon le signe de la valeur."""
-        if val is None or (isinstance(val, float) and np.isnan(val)):
-            return styles["metric_value"]
-        return styles["metric_value_green"] if val >= 0 else styles["metric_value_red"]
+def draw_table_header(c, x, y, cols, widths, row_h=5 * mm):
+    """Header de tableau bleu foncé."""
+    draw_rect(c, x, y, sum(widths), row_h, fill=C_DARK)
+    cx = x
+    for col, w in zip(cols, widths):
+        draw_text(c, cx + w / 2, y + 1.5 * mm, col,
+                  font="Helvetica-Bold", size=6.5, color=C_WHITE, align="center")
+        cx += w
+    return y - row_h
 
-    kpis = [
-        ("Perf. YTD",      metrics["perf_ytd"],       True,  "%"),
-        ("Perf. 1 an",     metrics["perf_1y"],         True,  "%"),
-        ("Perf. totale",   metrics["total_return"],    True,  "%"),
-        ("Volatilité ann.", metrics["volatility"],     False, "%"),
-        ("Sharpe",         metrics["sharpe"],          False, "x"),
-        ("Max Drawdown",   metrics["max_drawdown"],    True,  "%"),
+
+def draw_table_rows(c, x, y, rows, widths, aligns=None,
+                    row_h=4.5 * mm, bold_last=False):
+    """Lignes de tableau avec alternance de fond."""
+    aligns = aligns or ["left"] * len(widths)
+    for i, row in enumerate(rows):
+        bg = C_LIGHT if i % 2 == 0 else C_WHITE
+        draw_rect(c, x, y, sum(widths), row_h, fill=bg, stroke=C_BORDER, stroke_w=0.3)
+        cx = x
+        for j, (cell, w) in enumerate(zip(row, widths)):
+            font = "Helvetica-Bold" if (bold_last and i == len(rows) - 1) else "Helvetica"
+            # Couleur pour les valeurs perf
+            col = C_TEXT
+            if isinstance(cell, str) and cell.startswith("+"):
+                col = C_GREEN
+            elif isinstance(cell, str) and cell.startswith("-") and cell != "—":
+                col = C_RED
+            pad = 1.5 * mm if aligns[j] == "left" else -1.5 * mm
+            ax_ = cx + pad if aligns[j] == "left" else cx + w + pad
+            draw_text(c, ax_, y + 1.4 * mm, cell, size=6.5,
+                      color=col, align=aligns[j])
+            cx += w
+        y -= row_h
+    return y
+
+
+# ─────────────────────────────────────────────
+# Générateur PDF principal — canvas pur
+# ─────────────────────────────────────────────
+def generate_factsheet_pdf(port_idx, bench_idx, port_ret,
+                            allocation, ticker_names, weights):
+    buf    = io.BytesIO()
+    c      = rl_canvas.Canvas(buf, pagesize=A4)
+    metrics = compute_metrics(port_idx, bench_idx, port_ret)
+    as_of   = port_idx.index[-1].strftime("%d/%m/%Y")
+    today   = datetime.datetime.now().strftime("%d/%m/%Y")
+
+    # ── PAGE 1 ─────────────────────────────────────────────────────
+    y = H  # curseur vertical, on descend
+
+    # === HEADER BANNER ===
+    banner_h = 22 * mm
+    draw_rect(c, 0, H - banner_h, W, banner_h, fill=C_DARK)
+    # Barre or décorative
+    draw_rect(c, 0, H - banner_h, W, 1.2 * mm, fill=C_ACCENT)
+    draw_rect(c, 0, H - 1.2 * mm, W, 1.2 * mm, fill=C_ACCENT)
+
+    draw_text(c, ML, H - 8 * mm,
+              "PORTEFEUILLE HEDGÉ USD",
+              font="Helvetica-Bold", size=13, color=C_WHITE)
+    draw_text(c, ML, H - 13.5 * mm,
+              "Gestion multi-actifs — Couverture de change USD/EUR",
+              font="Helvetica", size=8, color=colors.HexColor("#A8B8CC"))
+    draw_text(c, W - MR, H - 8 * mm,
+              f"Au {as_of}",
+              font="Helvetica-Bold", size=8.5, color=C_ACCENT, align="right")
+    draw_text(c, W - MR, H - 13.5 * mm,
+              "Document à usage informatif uniquement",
+              font="Helvetica", size=7, color=colors.HexColor("#A8B8CC"), align="right")
+
+    y = H - banner_h - 4 * mm
+
+    # === LIGNE KPI (style EdR : 6 cases horizontales) ===
+    kpi_h   = 14 * mm
+    kpis    = [
+        ("Perf. YTD",     fp(metrics["perf_ytd"])),
+        ("Perf. 1 mois",  fp(metrics["perf_1m"])),
+        ("Perf. 1 an",    fp(metrics["perf_1y"])),
+        ("Volatilité ann.", fp(metrics["vol"])),
+        ("Sharpe",        fx(metrics["sharpe"])),
+        ("Max Drawdown",  fp(metrics["max_dd"])),
     ]
+    kw = CW / len(kpis)
+    for i, (label, val) in enumerate(kpis):
+        bx = ML + i * kw
+        bg = C_DARK if i % 2 == 0 else C_MID
+        draw_rect(c, bx, y - kpi_h, kw, kpi_h, fill=bg)
+        # Valeur grande
+        is_neg = isinstance(val, str) and val.startswith("-") and val != "n/a"
+        vc = colors.HexColor("#F4B942") if not is_neg else colors.HexColor("#F4A0A0")
+        draw_text(c, bx + kw / 2, y - kpi_h + 6 * mm, val,
+                  font="Helvetica-Bold", size=9.5, color=vc, align="center")
+        draw_text(c, bx + kw / 2, y - kpi_h + 2 * mm, label,
+                  font="Helvetica", size=6, color=colors.HexColor("#A8B8CC"), align="center")
+    y -= kpi_h + 4 * mm
 
-    metric_cells = []
-    for label, val, signed, suffix in kpis:
-        s = metric_style(val) if signed else styles["metric_value"]
-        metric_cells.append([
-            Paragraph(fmt(val, suffix, decimals=2), s),
-            Paragraph(label, styles["metric_label"])
-        ])
+    # === GRAPHIQUE PERFORMANCE ===
+    y = draw_section_title(c, ML, y, "PERFORMANCE CUMULÉE")
+    chart_h = 48 * mm
+    perf_png = build_perf_chart(port_idx, bench_idx, CW * (72 / mm), chart_h * (72 / mm))
+    from reportlab.lib.utils import ImageReader
+    c.drawImage(ImageReader(io.BytesIO(perf_png)),
+                ML, y - chart_h, width=CW, height=chart_h)
+    y -= chart_h + 4 * mm
 
-    # 3 colonnes x 2 lignes
-    row1 = [metric_cells[i][0] for i in range(3)]
-    row1b = [metric_cells[i][1] for i in range(3)]
-    row2 = [metric_cells[i][0] for i in range(3, 6)]
-    row2b = [metric_cells[i][1] for i in range(3, 6)]
-
-    kpi_table_data = [row1, row1b, row2, row2b]
-    col_w = (W - 2 * margin) / 3
-    kpi_table = Table(kpi_table_data, colWidths=[col_w] * 3)
-    kpi_table.setStyle(TableStyle([
-        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("BACKGROUND", (0, 0), (-1, -1), LIGHT_GRAY),
-        ("ROWBACKGROUND", (0, 0), (-1, -1), [LIGHT_GRAY, colors.white, LIGHT_GRAY, colors.white]),
-        ("GRID", (0, 0), (-1, -1), 0.3, MID_GRAY),
-        ("TOPPADDING", (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-    ]))
-    content.append(kpi_table)
-    content.append(Spacer(1, 5 * mm))
-
-    # ── Graphique performance cumulée ───────────────────────────────
-    content.append(Paragraph("Performance cumulée vs Benchmark", styles["section"]))
-    content.append(Spacer(1, 2 * mm))
-
-    perf_img_bytes = build_perf_chart(portfolio_index_hedged, bench_index)
-    perf_img = RLImage(io.BytesIO(perf_img_bytes), width=W - 2 * margin, height=68 * mm)
-    content.append(perf_img)
-    content.append(Spacer(1, 4 * mm))
-
-    # ── Drawdown + Allocation côte à côte ───────────────────────────
-    dd_img_bytes    = build_drawdown_chart(portfolio_returns_hedged)
-    alloc_img_bytes = build_allocation_chart(allocation, ticker_names, weights)
-
-    col_half = (W - 2 * margin - 6 * mm) / 2
-
-    dd_img    = RLImage(io.BytesIO(dd_img_bytes),    width=col_half, height=44 * mm)
-    alloc_img = RLImage(io.BytesIO(alloc_img_bytes), width=col_half, height=44 * mm)
-
-    two_col = Table([[dd_img, alloc_img]], colWidths=[col_half, col_half])
-    two_col.setStyle(TableStyle([
-        ("VALIGN",        (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING",   (0, 0), (-1, -1), 0),
-        ("RIGHTPADDING",  (0, 0), (-1, -1), 0),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
-        ("TOPPADDING",    (0, 0), (-1, -1), 0),
-        ("INNERGRID",     (0, 0), (-1, -1), 0, colors.white),
-    ]))
-    content.append(two_col)
-    content.append(Spacer(1, 4 * mm))
-
-    # ── Tableau métriques avancées ──────────────────────────────────
-    content.append(Paragraph("Statistiques de risque avancées", styles["section"]))
-    content.append(Spacer(1, 2 * mm))
-
-    advanced = [
-        ["Métrique", "Portefeuille hedgé", "Benchmark"],
-        ["Rendement annualisé",    fmt(metrics["ann_return"], "%"),     "—"],
-        ["Volatilité annualisée",  fmt(metrics["volatility"], "%"),     "—"],
-        ["Ratio de Sharpe",        fmt(metrics["sharpe"], "x"),         "—"],
-        ["Ratio de Sortino",       fmt(metrics["sortino"], "x"),        "—"],
-        ["Max Drawdown",           fmt(metrics["max_drawdown"], "%"),   "—"],
-        ["Ratio de Calmar",        fmt(metrics["calmar"], "x"),         "—"],
-        ["Beta vs benchmark",      fmt(metrics["beta"]),                "1.00"],
-        ["Corrélation benchmark",  fmt(metrics["correlation"]),         "1.00"],
-        ["Tracking Error",         fmt(metrics["tracking_error"], "%"), "—"],
-        ["Information Ratio",      fmt(metrics["information_ratio"]),   "—"],
+    # === TABLEAU PERFORMANCES ROLLING ===
+    y = draw_section_title(c, ML, y, "PERFORMANCES CUMULÉES (nettes de frais)")
+    col_labels = ["", "1 mois", "3 mois", "YTD", "1 an", "3 ans", "Depuis origine"]
+    col_w = [38 * mm, 20 * mm, 20 * mm, 20 * mm, 20 * mm, 20 * mm, 25 * mm]
+    y = draw_table_header(c, ML, y, col_labels, col_w)
+    perf_rows = [
+        ["Portefeuille hedgé",
+         fp(metrics["perf_1m"]), fp(metrics["perf_3m"]),
+         fp(metrics["perf_ytd"]), fp(metrics["perf_1y"]),
+         fp(metrics["perf_3y"]), fp(metrics["perf_total"])],
+        ["Benchmark composite",
+         fp(metrics["bench_1m"]), fp(metrics["bench_3m"]),
+         fp(metrics["bench_ytd"]), fp(metrics["bench_1y"]),
+         fp(metrics["bench_3y"]), "—"],
     ]
+    aligns_perf = ["left"] + ["right"] * 6
+    y = draw_table_rows(c, ML, y, perf_rows, col_w, aligns=aligns_perf)
+    y -= 4 * mm
 
-    col_w3 = [(W - 2 * margin) * r for r in [0.45, 0.275, 0.275]]
-    adv_table = Table(advanced, colWidths=col_w3)
-    adv_table.setStyle(TableStyle([
-        ("BACKGROUND",   (0, 0), (-1, 0), MID_BLUE),
-        ("TEXTCOLOR",    (0, 0), (-1, 0), WHITE),
-        ("FONTNAME",     (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE",     (0, 0), (-1, -1), 7.5),
-        ("ALIGN",        (1, 0), (-1, -1), "CENTER"),
-        ("ALIGN",        (0, 0), (0, -1), "LEFT"),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, LIGHT_GRAY]),
-        ("GRID",         (0, 0), (-1, -1), 0.3, MID_GRAY),
-        ("TOPPADDING",   (0, 0), (-1, -1), 3),
-        ("BOTTOMPADDING",(0, 0), (-1, -1), 3),
-        ("LEFTPADDING",  (0, 0), (0, -1), 6),
-    ]))
-    content.append(adv_table)
-    content.append(Spacer(1, 4 * mm))
+    # === DEUX COLONNES : DRAWDOWN + BARRES MENSUELLES ===
+    col2 = (CW - 4 * mm) / 2
+    # Drawdown
+    y_dd = draw_section_title(c, ML, y, "DRAWDOWN", w=col2)
+    dd_h = 30 * mm
+    dd_png = build_drawdown_chart(port_ret, col2 * (72 / mm), dd_h * (72 / mm))
+    c.drawImage(ImageReader(io.BytesIO(dd_png)),
+                ML, y_dd - dd_h, width=col2, height=dd_h)
 
-    # ── Tableau composition ─────────────────────────────────────────
-    content.append(Paragraph("Composition du portefeuille hedgé", styles["section"]))
-    content.append(Spacer(1, 2 * mm))
+    # Barres mensuelles
+    x2 = ML + col2 + 4 * mm
+    y_bar = draw_section_title(c, x2, y,
+                               f"PERFORMANCES MENSUELLES {datetime.date.today().year}",
+                               w=col2)
+    bar_png = build_monthly_bar_chart(port_ret, col2 * (72 / mm), dd_h * (72 / mm))
+    c.drawImage(ImageReader(io.BytesIO(bar_png)),
+                x2, y_bar - dd_h, width=col2, height=dd_h)
 
-    comp_data = [["Actif", "Ticker", "Poids cible", "Poids effectif"]]
+    y = min(y_dd, y_bar) - dd_h - 4 * mm
+
+    # === INDICATEURS DE RISQUE ===
+    y = draw_section_title(c, ML, y, "INDICATEURS DE RISQUE")
+    risk_cols    = ["Indicateur", "Portefeuille hedgé", "Benchmark"]
+    risk_widths  = [55 * mm, 45 * mm, 45 * mm]
+    y = draw_table_header(c, ML, y, risk_cols, risk_widths)
+    risk_rows = [
+        ["Rendement annualisé",      fp(metrics["ann_ret"]),  "—"],
+        ["Volatilité annualisée",    fp(metrics["vol"]),      "—"],
+        ["Ratio de Sharpe",          fx(metrics["sharpe"]),   "—"],
+        ["Ratio de Sortino",         fx(metrics["sortino"]),  "—"],
+        ["Max Drawdown",             fp(metrics["max_dd"]),   "—"],
+        ["Beta vs benchmark",        f"{metrics['beta']:.2f}" if not np.isnan(metrics['beta']) else "n/a", "1.00"],
+        ["Corrélation benchmark",    f"{metrics['corr']:.2f}" if not np.isnan(metrics['corr']) else "n/a", "1.00"],
+        ["Tracking Error",           fp(metrics["te"]),       "—"],
+        ["Information Ratio",        fx(metrics["ir"]),       "—"],
+    ]
+    aligns_risk = ["left", "right", "right"]
+    y = draw_table_rows(c, ML, y, risk_rows, risk_widths, aligns=aligns_risk)
+    y -= 3 * mm
+
+    # === DISCLAIMER PAGE 1 ===
+    draw_rect(c, 0, 0, W, 8 * mm, fill=C_DARK)
+    draw_text(c, ML, 3 * mm,
+              f"Document informatif — Performances passées non garanties — "
+              f"Couverture FX simulée sans coût — Données Yahoo Finance / FMP — Généré le {today}",
+              font="Helvetica-Oblique", size=5.5,
+              color=colors.HexColor("#7A8FA8"))
+    draw_text(c, W - MR, 3 * mm, "1 / 2",
+              font="Helvetica", size=5.5,
+              color=colors.HexColor("#7A8FA8"), align="right")
+
+    c.showPage()
+
+    # ── PAGE 2 ─────────────────────────────────────────────────────
+    y = H
+
+    # Header simplifié page 2
+    draw_rect(c, 0, H - 10 * mm, W, 10 * mm, fill=C_DARK)
+    draw_rect(c, 0, H - 10 * mm, W, 0.8 * mm, fill=C_ACCENT)
+    draw_text(c, ML, H - 6.5 * mm, "PORTEFEUILLE HEDGÉ USD — COMPOSITION ET ANALYSE",
+              font="Helvetica-Bold", size=8, color=C_WHITE)
+    draw_text(c, W - MR, H - 6.5 * mm, f"Au {as_of}",
+              font="Helvetica-Bold", size=7, color=C_ACCENT, align="right")
+    y = H - 10 * mm - 4 * mm
+
+    # === COMPOSITION — tableau principal ===
+    y = draw_section_title(c, ML, y, "COMPOSITION DU PORTEFEUILLE")
+
+    comp_cols   = ["Actif", "Ticker", "Classe", "Poids cible", "Poids effectif"]
+    comp_widths = [60 * mm, 34 * mm, 30 * mm, 25 * mm, 25 * mm]
+
+    def asset_class(ticker):
+        if ticker.startswith("0P"):
+            return "Fonds"
+        if ticker in ["GOOGL", "META", "HWM", "AMZN"]:
+            return "Actions US"
+        return "Actions EU"
+
+    y = draw_table_header(c, ML, y, comp_cols, comp_widths)
+    comp_rows = []
     for t, w in weights.items():
-        comp_data.append([
+        comp_rows.append([
             ticker_names.get(t, t),
             t,
+            asset_class(t),
             f"{allocation.get(t, 0) * 100:.1f}%",
-            f"{w * 100:.1f}%"
+            f"{w * 100:.1f}%",
         ])
-    comp_data.append(["Cash", "—", "5.0%", "5.0%"])
+    comp_rows.append(["Cash", "—", "Liquidités", "5.0%", "5.0%"])
+    aligns_comp = ["left", "left", "left", "right", "right"]
+    y = draw_table_rows(c, ML, y, comp_rows, comp_widths,
+                        aligns=aligns_comp, bold_last=True)
+    # Total
+    draw_rect(c, ML, y, sum(comp_widths), 4.5 * mm, fill=C_DARK)
+    total_eff = (weights.sum() + 0.05) * 100
+    draw_text(c, ML + 1.5 * mm, y + 1.2 * mm, "TOTAL",
+              font="Helvetica-Bold", size=6.5, color=C_WHITE)
+    draw_text(c, ML + sum(comp_widths) - 1.5 * mm, y + 1.2 * mm,
+              f"{total_eff:.1f}%",
+              font="Helvetica-Bold", size=6.5, color=C_ACCENT, align="right")
+    y -= 4.5 * mm + 5 * mm
 
-    col_w4 = [(W - 2 * margin) * r for r in [0.42, 0.22, 0.18, 0.18]]
-    comp_table = Table(comp_data, colWidths=col_w4)
-    comp_table.setStyle(TableStyle([
-        ("BACKGROUND",    (0, 0), (-1, 0), ACCENT_BLUE),
-        ("TEXTCOLOR",     (0, 0), (-1, 0), WHITE),
-        ("FONTNAME",      (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE",      (0, 0), (-1, -1), 7),
-        ("ALIGN",         (2, 0), (-1, -1), "CENTER"),
-        ("ALIGN",         (0, 0), (1, -1), "LEFT"),
-        ("ROWBACKGROUNDS",(0, 1), (-1, -1), [colors.white, LIGHT_GRAY]),
-        ("GRID",          (0, 0), (-1, -1), 0.3, MID_GRAY),
-        ("TOPPADDING",    (0, 0), (-1, -1), 2.5),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
-        ("LEFTPADDING",   (0, 0), (1, -1), 5),
-        ("FONTNAME",      (0, -1), (-1, -1), "Helvetica-Bold"),
-    ]))
-    content.append(comp_table)
-    content.append(Spacer(1, 5 * mm))
+    # === DEUX COLONNES : RÉPARTITION PAR CLASSE + TOP POSITIONS ===
+    col2 = (CW - 4 * mm) / 2
 
-    # ── Disclaimer ──────────────────────────────────────────────────
-    content.append(HRFlowable(width="100%", thickness=0.3, color=MID_GRAY))
-    content.append(Spacer(1, 2 * mm))
-    disclaimer_text = (
-        "Document à caractère informatif uniquement. Les performances passées ne préjugent pas des performances futures. "
-        "Ce document ne constitue pas un conseil en investissement. La couverture de change USD est simulée "
-        "sans coût de couverture. Données issues de Yahoo Finance / FMP via OpenBB. "
-        f"Généré le {datetime.datetime.now().strftime('%d/%m/%Y à %H:%M')}."
+    # Répartition par classe
+    y_left = draw_section_title(c, ML, y, "RÉPARTITION PAR CLASSE D'ACTIFS", w=col2)
+    class_data = {}
+    for t, w in weights.items():
+        cls = asset_class(t)
+        class_data[cls] = class_data.get(cls, 0) + w * 100
+    class_data["Cash"] = 5.0
+    cls_cols   = ["Classe d'actifs", "Allocation"]
+    cls_widths = [col2 * 0.65, col2 * 0.35]
+    y_left = draw_table_header(c, ML, y_left, cls_cols, cls_widths, row_h=4.5 * mm)
+    cls_rows = [[k, f"{v:.1f}%"] for k, v in sorted(class_data.items(), key=lambda x: -x[1])]
+    cls_rows.append(["Total", f"{sum(class_data.values()):.1f}%"])
+    y_left = draw_table_rows(c, ML, y_left, cls_rows, cls_widths,
+                             aligns=["left", "right"], bold_last=True)
+
+    # Top 5 positions (dernier mois)
+    x2 = ML + col2 + 4 * mm
+    y_right = draw_section_title(c, x2, y, "TOP 5 POSITIONS (POIDS EFFECTIF)", w=col2)
+    top5_data  = sorted(weights.items(), key=lambda x: -x[1])[:5]
+    top5_cols  = ["Actif", "Poids"]
+    top5_widths= [col2 * 0.70, col2 * 0.30]
+    y_right = draw_table_header(c, x2, y_right, top5_cols, top5_widths, row_h=4.5 * mm)
+    top5_rows = [[ticker_names.get(t, t), f"{w * 100:.1f}%"] for t, w in top5_data]
+    y_right = draw_table_rows(c, x2, y_right, top5_rows, top5_widths,
+                              aligns=["left", "right"])
+
+    y = min(y_left, y_right) - 5 * mm
+
+    # === TABLEAU PERFORMANCE MENSUELLE HISTORIQUE ===
+    y = draw_section_title(c, ML, y, "HISTORIQUE DE PERFORMANCE MENSUELLE (PORTEFEUILLE HEDGÉ)")
+
+    # Construire la grille mois × années
+    monthly_all = port_ret.resample("ME").apply(lambda x: (1 + x).prod() - 1) * 100
+    years_avail = sorted(monthly_all.index.year.unique())[-4:]  # 4 dernières années
+    month_labels = ["Jan", "Fév", "Mar", "Avr", "Mai", "Jun",
+                    "Jul", "Aoû", "Sep", "Oct", "Nov", "Déc", "Annuel"]
+    hist_cols   = ["Année"] + month_labels
+    hist_widths = [14 * mm] + [11.5 * mm] * 13
+    y = draw_table_header(c, ML, y, hist_cols, hist_widths, row_h=4.5 * mm)
+
+    hist_rows = []
+    for yr in years_avail:
+        row = [str(yr)]
+        ann_yr = 1.0
+        for m in range(1, 13):
+            mask = (monthly_all.index.year == yr) & (monthly_all.index.month == m)
+            if mask.any():
+                v = monthly_all[mask].iloc[0]
+                ann_yr *= (1 + v / 100)
+                row.append(fp(v, 1))
+            else:
+                row.append("—")
+        row.append(fp((ann_yr - 1) * 100, 1))
+        hist_rows.append(row)
+
+    aligns_hist = ["left"] + ["right"] * 13
+    y = draw_table_rows(c, ML, y, hist_rows, hist_widths,
+                        aligns=aligns_hist, row_h=4.5 * mm)
+    y -= 5 * mm
+
+    # === INFORMATIONS FONDS ===
+    y = draw_section_title(c, ML, y, "INFORMATIONS GÉNÉRALES")
+    info_rows = [
+        ["Stratégie", "Multi-actifs couvert USD"],
+        ["Benchmark", "35% IEV + 20% SPY + 25% TLT + 10% VNQ + 5% EEM"],
+        ["Couverture de change", "USD/EUR — simulation forward (sans coût)"],
+        ["Nombre de lignes", str(len(weights) + 1)],  # +1 cash
+        ["Univers géographique", "Europe, États-Unis, Marchés émergents"],
+        ["Source données", "Yahoo Finance / FMP via OpenBB"],
+    ]
+    info_widths = [50 * mm, CW - 50 * mm]
+    y = draw_table_rows(c, ML, y, info_rows, info_widths, aligns=["left", "left"])
+
+    # === DISCLAIMER PAGE 2 ===
+    draw_rect(c, 0, 0, W, 14 * mm, fill=colors.HexColor("#F4F6F7"))
+    draw_rect(c, 0, 13.3 * mm, W, 0.5, fill=C_BORDER)
+    disclaimer = (
+        "Ce document est établi à titre purement informatif et ne constitue pas un conseil en investissement, ni une offre ou sollicitation "
+        "d'achat ou de vente de valeurs mobilières. Les performances passées ne constituent pas un indicateur fiable des performances futures. "
+        "La simulation de couverture de change USD/EUR est effectuée sans coût de couverture. "
+        "Toutes les données sont issues de sources publiques (Yahoo Finance, FMP) et peuvent contenir des imprécisions."
     )
-    content.append(Paragraph(disclaimer_text, styles["disclaimer"]))
+    # Découpe manuelle en deux lignes
+    mid = len(disclaimer) // 2
+    cut = disclaimer.rfind(" ", 0, mid)
+    l1, l2 = disclaimer[:cut], disclaimer[cut + 1:]
+    draw_text(c, ML, 9 * mm, l1, font="Helvetica-Oblique", size=5.5, color=C_MUTED)
+    draw_text(c, ML, 5.5 * mm, l2, font="Helvetica-Oblique", size=5.5, color=C_MUTED)
+    draw_text(c, W - MR, 3 * mm, "2 / 2",
+              font="Helvetica", size=5.5, color=C_MUTED, align="right")
+    draw_rect(c, 0, 0, W, 2.5 * mm, fill=C_DARK)
 
-    doc.build(content)
+    c.save()
     buf.seek(0)
     return buf.read()
 
 
 # ─────────────────────────────────────────────
-# Section Streamlit à appeler dans l'app principale
+# Widget Streamlit
 # ─────────────────────────────────────────────
-def render_factsheet_section(
-    portfolio_index_hedged: pd.Series,
-    bench_index: pd.Series,
-    portfolio_returns_hedged: pd.Series,
-    allocation: dict,
-    ticker_names: dict,
-    weights: pd.Series
-):
-    """
-    Ajoute le bouton d'export factsheet à l'interface Streamlit.
-    Appelle cette fonction à la fin de ton portfolio_app.py.
-    """
+def render_factsheet_section(port_idx, bench_idx, port_ret,
+                              allocation, ticker_names, weights):
     st.divider()
-    st.subheader("📄 Export Factsheet")
+    st.subheader("📄 Export Factsheet mensuelle")
 
     col_info, col_btn = st.columns([3, 1])
-
     with col_info:
         st.markdown(
-            "Génère une factsheet PDF du portefeuille **hedgé USD** incluant : "
-            "indicateurs clés, performance vs benchmark, drawdown, "
-            "allocation et statistiques de risque avancées."
+            "Génère une **factsheet PDF 2 pages** style institutionnel : "
+            "performances rolling, drawdown, barres mensuelles, "
+            "composition détaillée, historique mensuel et métriques de risque."
         )
-
     with col_btn:
-        if st.button("⬇️ Générer la factsheet PDF", type="primary"):
-            with st.spinner("Génération du PDF en cours..."):
+        if st.button("⬇️ Générer la factsheet", type="primary", use_container_width=True):
+            with st.spinner("Génération en cours…"):
                 try:
-                    pdf_bytes = generate_factsheet_pdf(
-                        portfolio_index_hedged=portfolio_index_hedged,
-                        bench_index=bench_index,
-                        portfolio_returns_hedged=portfolio_returns_hedged,
-                        allocation=allocation,
-                        ticker_names=ticker_names,
-                        weights=weights
+                    pdf = generate_factsheet_pdf(
+                        port_idx, bench_idx, port_ret,
+                        allocation, ticker_names, weights
                     )
-                    filename = f"factsheet_{datetime.date.today().strftime('%Y%m%d')}.pdf"
+                    fname = f"factsheet_{datetime.date.today().strftime('%Y%m')}.pdf"
                     st.download_button(
-                        label="📥 Télécharger le PDF",
-                        data=pdf_bytes,
-                        file_name=filename,
+                        "📥 Télécharger le PDF",
+                        data=pdf,
+                        file_name=fname,
                         mime="application/pdf",
                         use_container_width=True
                     )
-                    st.success("Factsheet générée avec succès !")
+                    st.success("Factsheet générée ✓")
                 except Exception as e:
-                    st.error(f"Erreur lors de la génération : {e}")
+                    st.error(f"Erreur : {e}")
                     raise
