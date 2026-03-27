@@ -590,3 +590,17 @@ def render_factsheet_section(
                 except Exception as e:
                     st.error(f"Erreur lors de la génération : {e}")
                     raise
+
+# =====================
+# Export Factsheet
+# =====================
+from factsheet_export import render_factsheet_section
+
+render_factsheet_section(
+    portfolio_index_hedged=portfolio_index_hedged,
+    bench_index=bench_index,
+    portfolio_returns_hedged=portfolio_returns_hedged,
+    allocation=allocation,
+    ticker_names=ticker_names,
+    weights=weights
+)
