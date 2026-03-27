@@ -1,0 +1,8 @@
+streamlit
+yfinance
+pandas
+numpy
+plotly
+matplotlib
+reportlab
+# openbb  ← décommenter si déployé en local ou serveur dédié (trop lourd pour Streamlit Cloud gratuit)
