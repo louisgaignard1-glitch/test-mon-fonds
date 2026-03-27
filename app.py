@@ -519,3 +519,18 @@ col2.metric("Perf portefeuille hedgé (depuis le début)", f"{(portfolio_index_h
 col3.metric("Perf benchmark (depuis le début)", f"{(bench_index.iloc[-1]-1)*100:.2f}%")
 
 st.caption("Mise à jour automatique toutes les heures")
+
+
+# =====================
+# Export Factsheet
+# =====================
+from factsheet_export import render_factsheet_section
+
+render_factsheet_section(
+    portfolio_index_hedged=portfolio_index_hedged,
+    bench_index=bench_index,
+    portfolio_returns_hedged=portfolio_returns_hedged,
+    allocation=allocation,
+    ticker_names=ticker_names,
+    weights=weights
+)
