@@ -529,5 +529,5 @@ from factsheet_export import render_factsheet_section
 render_factsheet_section(
     portfolio_index_hedged, bench_index, portfolio_returns_hedged,
     allocation, ticker_names, weights,
-    prices_eur=prices_eur          # ← ajouter ce seul paramètre
+    prices_eur=prices_eur          
 )
