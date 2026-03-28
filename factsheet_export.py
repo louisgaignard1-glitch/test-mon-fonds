@@ -1,12 +1,12 @@
 """
-factsheet_export.py — Version Asset Manager (BlackRock/Amundi Style)
----------------------------------------------------------------------
-Standards appliqués :
-  • Couleurs : Bleu marine (#1B3A6B), Or (#B8972A), Vert/rouge pour les performances
-  • Polices : Helvetica, hiérarchie claire (titres 12pt, texte 8pt)
-  • Graphiques : Axes datés, légendes externes, grilles discrètes
-  • Tableaux : En-têtes bleu marine, alternance de couleurs, totaux en gras
-  • Mise en page : Marges 15mm, espacements généreux, séparateurs dorés
+factsheet_export.py — Version Professionnelle (Standards Asset Manager)
+-----------------------------------------------------------------------
+Améliorations clés :
+  • Graphiques : Taille augmentée (8x4 pouces), couleurs cohérentes (bleu marine/or), axes datés, légendes externes
+  • Tableaux : En-têtes bleu marine, alternance de couleurs, totaux en gras, alignement parfait
+  • Mise en page : Marges de 15mm, espacements aérés, en-tête/pied de page institutionnels
+  • Donut : Légende externe, couleurs par classe d'actif, texte central "Allocation 100%"
+  • Barres mensuelles : Empilées par classe, valeurs totales affichées au-dessus des barres
 """
 
 import io
@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import matplotlib
-matplotlib.use("Agg")
+matplotlib.use("Agg")  # Mode non-interactif pour Streamlit
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import matplotlib.dates as mdates
@@ -29,7 +29,7 @@ from reportlab.lib.utils import ImageReader
 # =============================================
 # PALETTE DE COULEURS (Standards Asset Manager)
 # =============================================
-P_NAVY    = colors.HexColor("#1B3A6B")  # Bleu marine (titres, en-têtes)
+P_NAVY    = colors.HexColor("#1B3A6B")  # Bleu marine (en-têtes, titres)
 P_GOLD    = colors.HexColor("#B8972A")  # Or (accents, lignes)
 P_GOLD_L  = colors.HexColor("#FBF3DF")  # Or clair (fond KPI)
 P_BLUE_L  = colors.HexColor("#EDF2FB")  # Bleu très clair (alternance tableaux)
@@ -41,7 +41,7 @@ P_POS     = colors.HexColor("#1A6B3C")  # Vert (performances positives)
 P_NEG     = colors.HexColor("#B03030")  # Rouge (performances négatives)
 P_WHITE   = colors.white
 
-# Couleurs par classe d'actif (cohérentes partout)
+# Couleurs par classe d'actif (cohérentes dans tous les graphiques)
 CLS_COLORS = {
     "Actions EU": "#2E5FA3",  # Bleu
     "Actions US": "#E07B39",  # Orange
@@ -62,7 +62,7 @@ FTR_H = 12 * mm  # Hauteur pied de page
 ST_H = 7.5 * mm  # Hauteur titre de section
 TH_H = 5.2 * mm  # Hauteur en-tête tableau
 TR_H = 4.3 * mm  # Hauteur ligne tableau
-GAP = 5 * mm    # Espacement entre sections
+GAP = 5 * mm     # Espacement entre sections
 
 # =============================================
 # CLASSIFIEUR D'ACTIFS
@@ -139,7 +139,7 @@ def fraw(v, d=2):
     return f"{v:.{d}f}"
 
 # =============================================
-# STYLE MATPLOTLIB (Commun à tous les graphiques)
+# STYLE MATPLOTLIB (Appliqué à tous les graphiques)
 # =============================================
 _RC = {
     "figure.facecolor": "white",  "axes.facecolor": "white",
@@ -147,15 +147,16 @@ _RC = {
     "axes.spines.left": True,     "axes.spines.bottom": True,
     "axes.edgecolor": "#C8D4E8",  "axes.linewidth": 0.8,
     "xtick.color": "#607080",     "ytick.color": "#607080",
-    "xtick.labelsize": 7,         "ytick.labelsize": 7,
+    "xtick.labelsize": 8,         "ytick.labelsize": 8,
     "grid.color": "#E8EEF6",      "grid.linewidth": 0.5,
-    "axes.titlesize": 9,          "axes.titlecolor": "#1B3A6B",
-    "axes.titleweight": "bold",   "axes.titlepad": 8,
-    "legend.fontsize": 7,         "legend.framealpha": 0.9,
+    "axes.titlesize": 10,         "axes.titlecolor": "#1B3A6B",
+    "axes.titleweight": "bold",  "axes.titlepad": 10,
+    "legend.fontsize": 8,        "legend.framealpha": 0.9,
     "legend.edgecolor": "#C8D4E8",
 }
 
-def _png(fig, dpi=120):
+def _png(fig, dpi=150):
+    """Convertit une figure matplotlib en PNG (haute qualité)."""
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight", facecolor="white")
     plt.close(fig)
@@ -163,71 +164,80 @@ def _png(fig, dpi=120):
     return buf.read()
 
 # =============================================
-# GRAPHIQUE 1 : PERFORMANCE CUMULÉE (avec axes datés)
+# GRAPHIQUE 1 : PERFORMANCE CUMULÉE (8x4 pouces, axes datés)
 # =============================================
 def g_perf(port_idx, bench_idx, w_pt, h_pt):
-    with plt.rc_context(_RC):
-        fig, ax = plt.subplots(figsize=(max(w_pt/72, 4.0), max(h_pt/72, 2.5)))
-        common = port_idx.index.intersection(bench_idx.index)
-        p = (port_idx.loc[common] - 1) * 100
-        b = (bench_idx.loc[common] - 1) * 100
+    plt.style.use('default')
+    matplotlib.rcParams.update(_RC)
 
-        # Remplissage bleu clair sous la courbe du portefeuille
-        ax.fill_between(p.index, p, 0, alpha=0.12, color="#2E5FA3", zorder=1)
-        ax.plot(p.index, p, color="#2E5FA3", lw=2.0, zorder=3, label="Portefeuille hedgé USD")
-        ax.plot(b.index, b, color="#B8972A", lw=1.5, ls="--", dashes=(5, 3), zorder=2, label="Benchmark composite")
-        ax.axhline(0, color="#C8D4E8", lw=0.7, ls=":", zorder=0)
+    fig, ax = plt.subplots(figsize=(8, 4))  # Taille augmentée
+    common = port_idx.index.intersection(bench_idx.index)
+    p = (port_idx.loc[common] - 1) * 100
+    b = (bench_idx.loc[common] - 1) * 100
 
-        # Axes et grille
-        ax.set_xlabel("Date", fontsize=7, color="#607080", labelpad=5)
-        ax.set_ylabel("Performance (%)", fontsize=7, color="#607080", labelpad=5)
-        ax.xaxis.set_major_locator(mdates.YearLocator())
-        ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
-        ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:+.0f}%"))
-        ax.grid(True, axis="both", zorder=0, alpha=0.4, linestyle="--")
-        ax.legend(loc="upper left", handlelength=2.0, fontsize=7)
-        ax.set_title("Performance cumulée nette de frais", fontsize=9, fontweight="bold", pad=10)
-        fig.subplots_adjust(left=0.08, right=0.98, top=0.88, bottom=0.15)
-        return _png(fig)
+    # Remplissage et courbes avec couleurs explicites
+    ax.fill_between(p.index, p, 0, alpha=0.1, color="#1B3A6B", zorder=1)
+    ax.plot(p.index, p, color="#1B3A6B", lw=2.0, zorder=3, label="Portefeuille hedgé USD")
+    ax.plot(b.index, b, color="#B8972A", lw=1.5, ls="--", dashes=(5, 3), zorder=2, label="Benchmark composite")
+
+    # Axes et grille
+    ax.set_xlabel("Date", fontsize=9, color="#607080", labelpad=8)
+    ax.set_ylabel("Performance (%)", fontsize=9, color="#607080", labelpad=8)
+    ax.xaxis.set_major_locator(mdates.YearLocator())
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
+    ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:+.0f}%"))
+    ax.grid(True, axis="both", zorder=0, alpha=0.3, linestyle="--", color="#E8EEF6")
+
+    # Légende et titre
+    ax.legend(loc="upper left", handlelength=2.0, fontsize=8, framealpha=0.9)
+    ax.set_title("Performance cumulée nette de frais", fontsize=12, fontweight="bold", pad=20, color="#1B3A6B")
+    fig.subplots_adjust(left=0.08, right=0.98, top=0.9, bottom=0.15)
+    return _png(fig)
 
 # =============================================
-# GRAPHIQUE 2 : DRAWDOWN (avec annotation)
+# GRAPHIQUE 2 : DRAWDOWN (avec annotation du max)
 # =============================================
 def g_dd(port_ret, w_pt, h_pt):
-    with plt.rc_context(_RC):
-        fig, ax = plt.subplots(figsize=(max(w_pt/72, 3.0), max(h_pt/72, 2.0)))
-        cum = (1 + port_ret.dropna()).cumprod()
-        dd = ((cum - cum.cummax()) / cum.cummax()) * 100
+    plt.style.use('default')
+    matplotlib.rcParams.update(_RC)
 
-        ax.fill_between(dd.index, dd, 0, color="#B03030", alpha=0.15, label="Drawdown")
-        ax.plot(dd.index, dd, color="#B03030", lw=1.2)
+    fig, ax = plt.subplots(figsize=(8, 3))  # Taille ajustée
+    cum = (1 + port_ret.dropna()).cumprod()
+    dd = ((cum - cum.cummax()) / cum.cummax()) * 100
 
-        # Annotation du max drawdown
-        idx_min = dd.idxmin()
-        val_min = dd.min()
-        ax.annotate(
-            f"Max DD\n{val_min:.1f}%",
-            xy=(idx_min, val_min), xytext=(25, 15), textcoords="offset points",
-            fontsize=6, color="#B03030",
-            arrowprops=dict(arrowstyle="->", color="#B03030", lw=0.8),
-            bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.8, ec="#B03030", lw=0.5)
-        )
+    ax.fill_between(dd.index, dd, 0, color="#B03030", alpha=0.15, label="Drawdown")
+    ax.plot(dd.index, dd, color="#B03030", lw=1.2)
 
-        ax.set_xlabel("Date", fontsize=7, color="#607080", labelpad=5)
-        ax.set_ylabel("Drawdown (%)", fontsize=7, color="#607080", labelpad=5)
-        ax.xaxis.set_major_locator(mdates.YearLocator())
-        ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
-        ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:.1f}%"))
-        ax.grid(True, axis="both", zorder=0, alpha=0.4, linestyle="--")
-        ax.legend(loc="lower left", handlelength=1.5, fontsize=7)
-        ax.set_title("Drawdown depuis le sommet", fontsize=9, fontweight="bold", pad=10)
-        fig.subplots_adjust(left=0.12, right=0.98, top=0.88, bottom=0.18)
-        return _png(fig)
+    # Annotation du max drawdown
+    idx_min = dd.idxmin()
+    val_min = dd.min()
+    ax.annotate(
+        f"Max DD\n{val_min:.1f}%",
+        xy=(idx_min, val_min), xytext=(25, 15), textcoords="offset points",
+        fontsize=8, color="#B03030",
+        arrowprops=dict(arrowstyle="->", color="#B03030", lw=0.8),
+        bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.8, ec="#B03030", lw=0.5)
+    )
+
+    ax.set_xlabel("Date", fontsize=9, color="#607080", labelpad=8)
+    ax.set_ylabel("Drawdown (%)", fontsize=9, color="#607080", labelpad=8)
+    ax.xaxis.set_major_locator(mdates.YearLocator())
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
+    ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:.1f}%"))
+    ax.grid(True, axis="both", zorder=0, alpha=0.3, linestyle="--", color="#E8EEF6")
+    ax.legend(loc="lower left", handlelength=1.5, fontsize=8)
+    ax.set_title("Drawdown depuis le sommet", fontsize=12, fontweight="bold", pad=20, color="#1B3A6B")
+    fig.subplots_adjust(left=0.1, right=0.98, top=0.9, bottom=0.2)
+    return _png(fig)
 
 # =============================================
-# GRAPHIQUE 3 : BARRES MENSUELLES EMPILÉES
+# GRAPHIQUE 3 : BARRES MENSUELLES EMPILÉES PAR CLASSE
 # =============================================
 def g_monthly(port_ret, weights, w_pt, h_pt):
+    plt.style.use('default')
+    matplotlib.rcParams.update(_RC)
+
+    fig, ax = plt.subplots(figsize=(8, 4))
     today_yr = datetime.date.today().year
     monthly_total = pd.Series(dtype=float)
     for cand in [today_yr, today_yr - 1]:
@@ -245,52 +255,55 @@ def g_monthly(port_ret, weights, w_pt, h_pt):
     total_w = sum(cls_weights.values())
     cls_frac = {c: cls_weights[c] / total_w for c in CLS_ORDER}
 
-    with plt.rc_context(_RC):
-        fig, ax = plt.subplots(figsize=(max(w_pt/72, 3.5), max(h_pt/72, 2.5)))
-        if monthly_total.empty:
-            ax.text(0.5, 0.5, "Données mensuelles\nindisponibles", ha="center", va="center", fontsize=8, color="#607080")
-        else:
-            xs = list(range(len(monthly_total)))
-            mois_labels = ["Jan","Fév","Mar","Avr","Mai","Jun","Jul","Aoû","Sep","Oct","Nov","Déc"]
-            x_labels = [mois_labels[d.month - 1] for d in monthly_total.index]
+    if not monthly_total.empty:
+        xs = list(range(len(monthly_total)))
+        mois_labels = ["Jan","Fév","Mar","Avr","Mai","Jun","Jul","Aoû","Sep","Oct","Nov","Déc"]
+        x_labels = [mois_labels[d.month - 1] for d in monthly_total.index]
 
-            bottom_pos = np.zeros(len(monthly_total))
-            bottom_neg = np.zeros(len(monthly_total))
-            legend_handles = []
+        bottom_pos = np.zeros(len(monthly_total))
+        bottom_neg = np.zeros(len(monthly_total))
+        legend_handles = []
 
-            for cls in CLS_ORDER:
-                frac = cls_frac[cls]
-                contribs = monthly_total.values * frac
-                color = CLS_COLORS[cls]
-                bar_pos = np.where(contribs >= 0, contribs, 0.0)
-                bar_neg = np.where(contribs < 0, contribs, 0.0)
+        for cls in CLS_ORDER:
+            frac = cls_frac[cls]
+            contribs = monthly_total.values * frac
+            color = CLS_COLORS[cls]
+            bar_pos = np.where(contribs >= 0, contribs, 0.0)
+            bar_neg = np.where(contribs < 0, contribs, 0.0)
 
-                ax.bar(xs, bar_pos, bottom=bottom_pos, color=color, edgecolor="white", lw=0.5, width=0.7, zorder=3)
-                ax.bar(xs, bar_neg, bottom=bottom_neg, color=color, edgecolor="white", lw=0.5, width=0.7, zorder=3)
-                bottom_pos += bar_pos
-                bottom_neg += bar_neg
-                legend_handles.append(Patch(facecolor=color, label=cls))
+            ax.bar(xs, bar_pos, bottom=bottom_pos, color=color, edgecolor="white", lw=0.5, width=0.7, zorder=3)
+            ax.bar(xs, bar_neg, bottom=bottom_neg, color=color, edgecolor="white", lw=0.5, width=0.7, zorder=3)
+            bottom_pos += bar_pos
+            bottom_neg += bar_neg
+            legend_handles.append(Patch(facecolor=color, label=cls))
 
-            # Valeurs totales au-dessus des barres
-            for xi, val in zip(xs, monthly_total.values):
-                ax.text(xi, val + 0.5, f"{val:+.1f}%", ha="center", va="bottom", fontsize=6, color="#1A2E4A", fontweight="bold")
+        # Valeurs totales au-dessus des barres
+        for xi, val in zip(xs, monthly_total.values):
+            ax.text(xi, val + 0.5, f"{val:+.1f}%", ha="center", va="bottom", fontsize=8, color="#1A2E4A", fontweight="bold")
 
-            ax.set_xticks(xs)
-            ax.set_xticklabels(x_labels, fontsize=6.5)
-            ax.set_xlabel("Mois", fontsize=7, color="#607080", labelpad=5)
-            ax.set_ylabel("Contribution (%)", fontsize=7, color="#607080", labelpad=5)
-            ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:+.1f}%"))
-            ax.grid(True, axis="y", zorder=0, alpha=0.4, linestyle="--")
-            ax.legend(handles=legend_handles, loc="upper right", handlelength=1.2, fontsize=6.5, framealpha=0.9)
+        ax.set_xticks(xs)
+        ax.set_xticklabels(x_labels, fontsize=8)
+        ax.set_xlabel("Mois", fontsize=9, color="#607080", labelpad=8)
+        ax.set_ylabel("Contribution (%)", fontsize=9, color="#607080", labelpad=8)
+        ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:+.1f}%"))
+        ax.grid(True, axis="y", zorder=0, alpha=0.3, linestyle="--", color="#E8EEF6")
+        ax.legend(handles=legend_handles, loc="upper right", handlelength=1.2, fontsize=8, framealpha=0.9)
 
-        ax.set_title(f"Contributions mensuelles {datetime.date.today().year} · par classe d'actifs", fontsize=9, fontweight="bold", pad=10)
-        fig.subplots_adjust(left=0.10, right=0.98, top=0.88, bottom=0.15)
-        return _png(fig)
+    else:
+        ax.text(0.5, 0.5, "Données mensuelles\nindisponibles", ha="center", va="center", fontsize=10, color="#607080")
+
+    ax.set_title(f"Contributions mensuelles {datetime.date.today().year} · par classe d'actifs",
+                 fontsize=12, fontweight="bold", pad=20, color="#1B3A6B")
+    fig.subplots_adjust(left=0.08, right=0.98, top=0.9, bottom=0.15)
+    return _png(fig)
 
 # =============================================
 # GRAPHIQUE 4 : DONUT D'ALLOCATION (légende externe)
 # =============================================
 def g_pie(cls_data, side_pt):
+    plt.style.use('default')
+    matplotlib.rcParams.update(_RC)
+
     labels = [c for c in CLS_ORDER if c in cls_data and cls_data[c] > 0]
     values = [cls_data[c] for c in labels]
     clrs = [CLS_COLORS[c] for c in labels]
@@ -309,7 +322,7 @@ def g_pie(cls_data, side_pt):
     )
     centre_circle = plt.Circle((0, 0), 0.40, fc="white", zorder=10)
     ax.add_patch(centre_circle)
-    ax.text(0, 0, "Allocation\n100%", ha="center", va="center", fontsize=8, color="#1B3A6B", fontweight="bold")
+    ax.text(0, 0, "Allocation\n100%", ha="center", va="center", fontsize=10, color="#1B3A6B", fontweight="bold")
 
     # Légende externe (50% de la largeur)
     ax_leg = fig.add_axes([0.55, 0.10, 0.40, 0.80])
@@ -317,12 +330,13 @@ def g_pie(cls_data, side_pt):
     handles = [Patch(facecolor=CLS_COLORS[l], edgecolor="white", linewidth=0.5) for l in labels]
     leg_labels = [f"{l}\n{cls_data[l]/total*100:.1f}%" for l in labels]
     ax_leg.legend(
-        handles, leg_labels, loc="center left", fontsize=7,
+        handles, leg_labels, loc="center left", fontsize=8,
         handlelength=1.2, handleheight=0.8, frameon=False, labelspacing=0.8
     )
 
-    fig.text(0.05, 0.95, "Répartition par classe d'actifs", fontsize=8, fontweight="bold", color="#1B3A6B", va="top")
-    return _png(fig, dpi=120)
+    fig.text(0.05, 0.95, "Répartition par classe d'actifs",
+             fontsize=10, fontweight="bold", color="#1B3A6B", va="top")
+    return _png(fig, dpi=150)
 
 # =============================================
 # PRIMITIVES CANVAS (ReportLab)
@@ -354,11 +368,11 @@ def _img_fit(c, png_bytes, x, y, w, h):
 
 def sec(c, x, y, title, w=None):
     bw = w if w is not None else CW
-    _rect(c, x, y - ST_H, bw, ST_H, fill=P_NAVY)
+    _rect(c, x, y - ST_H, bw, ST_H, fill=P_NAVY)  # Fond bleu marine
     _rect(c, x, y - ST_H, 3.2*mm, ST_H, fill=P_GOLD)  # Bande dorée à gauche
     _hline(c, x, x + bw, y - ST_H, color=P_GOLD, lw=0.9)
     mid_y = y - ST_H + (ST_H - 8) / 2
-    _text(c, x + 5*mm, mid_y, title, font="Helvetica-Bold", size=8, color=P_WHITE)
+    _text(c, x + 5*mm, mid_y, title, font="Helvetica-Bold", size=9, color=P_WHITE)
     return y - ST_H - 2*mm
 
 def thead(c, x, y, cols, widths):
@@ -372,7 +386,7 @@ def thead(c, x, y, cols, widths):
             c.line(cx, y - TH_H + 0.8*mm, cx, y - 0.8*mm)  # Séparateurs verticaux
             c.restoreState()
         mid = y - TH_H + (TH_H - 6.5) / 2
-        _text(c, cx + w/2, mid, col, font="Helvetica-Bold", size=6.5, color=P_WHITE, align="center")
+        _text(c, cx + w/2, mid, col, font="Helvetica-Bold", size=7, color=P_WHITE, align="center")
         cx += w
     return y - TH_H
 
@@ -390,9 +404,9 @@ def trows(c, x, y, rows, widths, aligns=None, rh=TR_H, bold_last=False, stripe=T
             if s.startswith("+"): col = P_POS
             elif s.startswith("-") and s not in ("-", "—"): col = P_NEG
             pad = 2.2 * mm
-            if aligns[j] == "left": _text(c, cx + pad, ty, s, fnt, 6.5, col, "left")
-            elif aligns[j] == "right": _text(c, cx + w - pad, ty, s, fnt, 6.5, col, "right")
-            else: _text(c, cx + w/2, ty, s, fnt, 6.5, col, "center")
+            if aligns[j] == "left": _text(c, cx + pad, ty, s, fnt, 7, col, "left")
+            elif aligns[j] == "right": _text(c, cx + w - pad, ty, s, fnt, 7, col, "right")
+            else: _text(c, cx + w/2, ty, s, fnt, 7, col, "center")
             cx += w
         y -= rh
     return y
@@ -403,20 +417,16 @@ def trows(c, x, y, rows, widths, aligns=None, rh=TR_H, bold_last=False, stripe=T
 def draw_header(c, subtitle, as_of, page_lbl):
     _rect(c, 0, H - HDR_H, W, HDR_H, fill=P_NAVY)  # Bandeau bleu marine
     _rect(c, 0, H - HDR_H, 4*mm, HDR_H, fill=P_GOLD)  # Bande dorée à gauche
-    _hline(c, 0, W, H - HDR_H, color=P_GOLD, lw=1.4)  # Ligne dorée en haut
+    _hline(c, 0, W, H - HDR_H, color=P_GOLD, lw=1.4)
     _rect(c, 0, H - 1.3*mm, W, 1.3*mm, fill=P_GOLD)  # Ligne dorée en bas
 
-    # Titre principal
     _text(c, ML+2*mm, H-11*mm, "PORTEFEUILLE MULTI-ACTIFS  ·  HEDGÉ USD",
           font="Helvetica-Bold", size=13, color=P_WHITE)
-    # Sous-titre
     _text(c, ML+2*mm, H-18*mm, subtitle,
           font="Helvetica", size=8, color=colors.HexColor("#AABFD8"))
-    # Disclaimer léger
     _text(c, ML+2*mm, H-23.5*mm,
           "Document à usage informatif — Performances passées non garanties",
           font="Helvetica-Oblique", size=6, color=colors.HexColor("#7A90A8"))
-    # Date et numéro de page
     _text(c, W-MR, H-11*mm, f"Au {as_of}",
           font="Helvetica-Bold", size=10, color=P_GOLD, align="right")
     _text(c, W-MR, H-18*mm, page_lbl,
@@ -424,8 +434,8 @@ def draw_header(c, subtitle, as_of, page_lbl):
     return H - HDR_H - GAP
 
 def draw_footer(c, today):
-    _rect(c, 0, 0, W, FTR_H, fill=P_NAVY)  # Fond bleu marine
-    _hline(c, 0, W, FTR_H, color=P_GOLD, lw=0.7)  # Ligne dorée
+    _rect(c, 0, 0, W, FTR_H, fill=P_NAVY)
+    _hline(c, 0, W, FTR_H, color=P_GOLD, lw=0.7)
     _text(c, ML, 3*mm,
           f"Données : Yahoo Finance / FMP via OpenBB  —  Couverture FX simulée sans coût  —  Généré le {today}",
           font="Helvetica-Oblique", size=5.5, color=colors.HexColor("#7A90A8"))
@@ -454,19 +464,19 @@ def page1(c, port_idx, bench_idx, port_ret, weights, m, as_of, today):
     kw = CW / len(kpis)
     for i, (lbl, val) in enumerate(kpis):
         bx = ML + i * kw
-        bg = P_GOLD_L if i % 2 == 0 else P_BLUE_L  # Alternance or/bleu clair
+        bg = P_GOLD_L if i % 2 == 0 else P_BLUE_L
         _rect(c, bx, y - KPI_H, kw, KPI_H, fill=bg, stroke=P_BORDER, sw=0.3)
         neg = isinstance(val, str) and val.startswith("-") and val != "n/a"
-        vc = P_NEG if neg else P_NAVY  # Rouge si négatif, bleu marine sinon
+        vc = P_NEG if neg else P_NAVY
         _text(c, bx+kw/2, y-KPI_H+9.5*mm, val,
-              font="Helvetica-Bold", size=11, color=vc, align="center")
+              font="Helvetica-Bold", size=10, color=vc, align="center")
         _text(c, bx+kw/2, y-KPI_H+3.5*mm, lbl,
-              font="Helvetica", size=6.2, color=P_MUTED, align="center")
+              font="Helvetica", size=7, color=P_MUTED, align="center")
         if i > 0:
             c.saveState(); c.setStrokeColor(P_BORDER); c.setLineWidth(0.4)
-            c.line(bx, y-KPI_H+1.5*mm, bx, y-1.5*mm)  # Séparateurs verticaux
+            c.line(bx, y-KPI_H+1.5*mm, bx, y-1.5*mm)
             c.restoreState()
-    _hline(c, ML, ML+CW, y-KPI_H, color=P_GOLD, lw=1.0)  # Ligne dorée sous les KPIs
+    _hline(c, ML, ML+CW, y-KPI_H, color=P_GOLD, lw=1.0)
     y -= KPI_H + GAP
 
     # --- Performance cumulée (graphique) ---
@@ -495,11 +505,9 @@ def page1(c, port_idx, bench_idx, port_ret, weights, m, as_of, today):
     H2 = 48 * mm
     ytop = y
 
-    # Drawdown (gauche)
     yl = sec(c, ML, ytop, "DRAWDOWN  ·  portefeuille hedgé USD", w=col2)
     _img_rect(c, g_dd(port_ret, col2*(72/mm), H2*(72/mm)), ML, yl-H2, col2, H2)
 
-    # Barres mensuelles (droite)
     x2 = ML + col2 + 5*mm
     yr = sec(c, x2, ytop, f"CONTRIBUTIONS MENSUELLES {datetime.date.today().year}  ·  par classe d'actifs", w=col2)
     _img_rect(c, g_monthly(port_ret, weights, col2*(72/mm), H2*(72/mm)), x2, yr-H2, col2, H2)
@@ -549,10 +557,10 @@ def page2(c, port_ret, allocation, ticker_names, weights, as_of, today):
     # --- Ligne total (fond bleu marine) ---
     _rect(c, ML, y-5*mm, sum(cw), 5*mm, fill=P_NAVY)
     mid_tot = y - 5*mm + (5*mm - 7) / 2
-    _text(c, ML+3*mm, mid_tot, "TOTAL", font="Helvetica-Bold", size=7, color=P_WHITE)
+    _text(c, ML+3*mm, mid_tot, "TOTAL", font="Helvetica-Bold", size=8, color=P_WHITE)
     _text(c, ML+sum(cw)-3*mm, mid_tot,
           f"{(weights.sum()+0.05)*100:.1f}%",
-          font="Helvetica-Bold", size=7, color=P_GOLD, align="right")
+          font="Helvetica-Bold", size=8, color=P_GOLD, align="right")
     y -= 5*mm + GAP
 
     # --- 3 colonnes : Classe | Donut | Top 5 ---
@@ -583,7 +591,7 @@ def page2(c, port_ret, allocation, ticker_names, weights, as_of, today):
         c.setFillColor(colors.HexColor(CLS_COLORS[k]))
         c.rect(ML + 1*mm, ly - 2.5*mm, 3*mm, 2.5*mm, fill=1, stroke=0)
         c.restoreState()
-        _text(c, ML + 5.5*mm, ly - 2.2*mm, k, font="Helvetica", size=6, color=P_TEXT)
+        _text(c, ML + 5.5*mm, ly - 2.2*mm, k, font="Helvetica", size=7, color=P_TEXT)
         ly -= 4*mm
 
     # Donut (centre)
