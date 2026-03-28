@@ -527,10 +527,6 @@ st.caption("Mise à jour automatique toutes les heures")
 from factsheet_export import render_factsheet_section
 
 render_factsheet_section(
-    port_idx=portfolio_index_hedged,
-    bench_idx=bench_index,
-    port_ret=portfolio_returns_hedged,
-    allocation=allocation,
-    ticker_names=ticker_names,
-    weights=weights
+    portfolio_index_hedged, bench_index, portfolio_returns_hedged,
+    allocation, ticker_names, weights
 )
