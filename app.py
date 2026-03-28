@@ -330,32 +330,34 @@ portfolio_index_hedged = (1 + portfolio_returns_hedged).cumprod()
 @st.cache_data(ttl=3600)
 def load_benchmark_composite(start):
     benchmark_weights = {
-        "IEV":   0.35,   # MSCI Europe — couvre vos actions EU
-        "SPY":   0.10,   # S&P 500 — réduit, votre expo US est ~11%
-        "HYG":   0.10,   # iShares HY Bond US — proxy AXAIMFIIS
-        "IHYG.L": 0.07,  # iShares HY EUR — proxy R-co Crédit Euro
-        "CTA":   0.10,   # WisdomTree Managed Futures — proxy Helium/Eleva abs. ret.
-        "TLT":   0.05,   # Oblig. LT US — réduit massivement (de 25% → 5%)
-        "VNQI":  0.05,   # Vanguard Global ex-US REIT — plus proche Immobilier 21
-        "EEM":   0.08,   # Marchés émergents — GemEquity
-        "SHV":   0.10,   # iShares Short Treasury — proxy cash / MMkt
+        "IEV":     0.38,   # MSCI Europe — actions EU individuelles
+        "ACWI":    0.11,   # MSCI World — proxy actions US (GOOGL/META/HWM/AMZN)
+        "AGGG":    0.24,   # Bloomberg Agg. Global EUR — proxy fonds oblig. + abs. ret.
+        "EPRA.PA": 0.05,   # FTSE EPRA NAREIT Europe — proxy Immobilier 21
+        "EEM":     0.08,   # MSCI Emerging Markets — proxy GemEquity
+        "SHV":     0.14,   # iShares Short Treasury — cash + tampon alternatifs
     }
     prices = pd.DataFrame()
-    for ticker, w in benchmark_weights.items():
+    failed = []
+    for ticker in benchmark_weights:
         tmp = yf.download(ticker, start=start, progress=False, auto_adjust=True)
         if not tmp.empty:
             col = "Close" if "Close" in tmp.columns else tmp.columns[0]
             prices[ticker] = tmp[col]
         else:
-            st.warning(f"⚠️ Benchmark : données manquantes pour `{ticker}`")
+            failed.append(ticker)
+
+    if failed:
+        st.warning(f"⚠️ Benchmark : tickers manquants {failed} — poids renormalisés")
+
     if prices.empty:
         st.error("Aucune donnée de benchmark.")
         st.stop()
+
     prices = prices.ffill()
-    # Renormaliser si certains tickers échouent
     w = pd.Series(benchmark_weights)
     w = w[w.index.isin(prices.columns)]
-    w = w / w.sum()
+    w = w / w.sum()   # renormalisation si ticker manquant
     r = prices.pct_change().fillna(0)
     return (1 + (r * w).sum(axis=1)).cumprod()
 
@@ -462,12 +464,18 @@ else:
 # =====================
 st.subheader("📊 Composition du benchmark")
 st.markdown("""
-Le benchmark composite reflète la structure multi-actifs du portefeuille :
-- 35% MSCI Europe Index (IEV) → actions européennes
-- 20% S&P 500 → actions américaines
-- 25% Obligations américaines à long terme → obligations
-- 10% Immobilier américain → immobilier
-- 5% MSCI Emerging Markets → actions émergentes
+Le benchmark composite est calé sur la structure réelle du portefeuille pour minimiser la tracking error :
+
+| ETF | Poids | Proxy pour |
+|-----|-------|------------|
+| IEV — MSCI Europe | 38% | Actions européennes individuelles |
+| ACWI — MSCI World | 11% | Actions américaines (GOOGL, META, HWM, AMZN) |
+| AGGG — Agg. Global EUR | 24% | Fonds obligataires HY + fonds abs. return |
+| EPRA.PA — REIT Europe | 5% | Immobilier 21 AC |
+| EEM — Marchés émergents | 8% | GemEquity R |
+| SHV — Short Treasury | 14% | Cash + tampon alternatifs non couverts |
+
+> **Note :** AGGG est en EUR et déjà hedgé devise — cohérent avec votre exposition obligataire domestique.
 """)
 st.subheader("💱 Couverture FX USD")
 st.markdown("""
