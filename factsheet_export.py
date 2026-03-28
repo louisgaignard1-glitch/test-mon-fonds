@@ -1,3 +1,5 @@
+streamlit run app.py
+
 """
 factsheet_export.py — v4 production
 ------------------------------------
