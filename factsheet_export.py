@@ -787,7 +787,7 @@ def _page2(c, port_ret, allocation, ticker_names, weights,
         iw = [52*mm, CW - 52*mm]
         _trows(c, ML, y, [
             ["Strategie",           "Multi-actifs couvert USD"],
-            ["Benchmark",           "35% IEV — 20% SPY — 25% TLT — 10% VNQ — 5% EEM"],
+            ["Benchmark", "35% IEV — 10% SPY — 10% HYG — 7% IHYG — 10% CTA — 5% TLT — 5% VNQI — 8% EEM — 10% SHV"],
             ["Couverture de change", "USD/EUR — simulation forward (sans cout inclus)"],
             ["Nombre de lignes",     f"{len(weights) + 1} (dont cash)"],
             ["Univers",              "Europe, Etats-Unis, Marches emergents"],
