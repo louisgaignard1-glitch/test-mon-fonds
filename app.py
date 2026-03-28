@@ -330,23 +330,32 @@ portfolio_index_hedged = (1 + portfolio_returns_hedged).cumprod()
 @st.cache_data(ttl=3600)
 def load_benchmark_composite(start):
     benchmark_weights = {
-        "IEV": 0.35,
-        "SPY": 0.20,
-        "TLT": 0.25,
-        "VNQ": 0.10,
-        "EEM": 0.05
+        "IEV":   0.35,   # MSCI Europe — couvre vos actions EU
+        "SPY":   0.10,   # S&P 500 — réduit, votre expo US est ~11%
+        "HYG":   0.10,   # iShares HY Bond US — proxy AXAIMFIIS
+        "IHYG.L": 0.07,  # iShares HY EUR — proxy R-co Crédit Euro
+        "CTA":   0.10,   # WisdomTree Managed Futures — proxy Helium/Eleva abs. ret.
+        "TLT":   0.05,   # Oblig. LT US — réduit massivement (de 25% → 5%)
+        "VNQI":  0.05,   # Vanguard Global ex-US REIT — plus proche Immobilier 21
+        "EEM":   0.08,   # Marchés émergents — GemEquity
+        "SHV":   0.10,   # iShares Short Treasury — proxy cash / MMkt
     }
     prices = pd.DataFrame()
-    for ticker in benchmark_weights.keys():
-        tmp = yf.download(ticker, start=start, progress=False)
+    for ticker, w in benchmark_weights.items():
+        tmp = yf.download(ticker, start=start, progress=False, auto_adjust=True)
         if not tmp.empty:
-            col = "Adj Close" if "Adj Close" in tmp.columns else "Close"
+            col = "Close" if "Close" in tmp.columns else tmp.columns[0]
             prices[ticker] = tmp[col]
+        else:
+            st.warning(f"⚠️ Benchmark : données manquantes pour `{ticker}`")
     if prices.empty:
         st.error("Aucune donnée de benchmark.")
         st.stop()
     prices = prices.ffill()
+    # Renormaliser si certains tickers échouent
     w = pd.Series(benchmark_weights)
+    w = w[w.index.isin(prices.columns)]
+    w = w / w.sum()
     r = prices.pct_change().fillna(0)
     return (1 + (r * w).sum(axis=1)).cumprod()
 
