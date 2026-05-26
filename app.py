@@ -536,7 +536,7 @@ def generate_professional_factsheet(portfolio_index, bench_index, portfolio_inde
     story.append(Paragraph(f"As of {date_str}", subtitle_style))
     
     # Ligne séparatrice
-    from reportlab.platypus import Line
+    from reportlab.platypus.flowables import HRFlowable
     story.append(Spacer(1, 0.1*cm))
     
     story.append(Spacer(1, 0.15*cm))
