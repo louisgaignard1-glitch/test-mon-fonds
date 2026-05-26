@@ -437,14 +437,21 @@ def generate_professional_factsheet(portfolio_index, bench_index, portfolio_inde
     """Génère une factsheet PDF style asset managers professionnels"""
     
     pdf_buffer = BytesIO()
+    
+    # 1. On définit 'mm' AVANT de l'utiliser dans SimpleDocTemplate
+    mm = 0.1 * cm 
+    
+    # 2. On configure le document avec des assignations standards (=)
     doc = SimpleDocTemplate(
-        pdf_buffer, pagesize=A4,
-        rightMargin=12*mm := 1*cm,
-        leftMargin=12*mm,
-        topMargin=12*mm,
-        bottomMargin=12*mm
+        pdf_buffer, 
+        pagesize=A4,
+        rightMargin=12 * mm,  # Changement ici (pas de :=)
+        leftMargin=12 * mm,
+        topMargin=12 * mm,
+        bottomMargin=12 * mm
     )
-    mm = 0.1*cm
+    
+    # Supprimez l'ancienne ligne 'mm = 0.1*cm' qui se trouvait ici
     story = []
     
     # =========== STYLES PROFESSIONNELS ===========
