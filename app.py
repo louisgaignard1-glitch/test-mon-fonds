@@ -390,11 +390,12 @@ if len(prices_month) >= 2:
     col_bar, col_line = st.columns(2)
     top5_labels = [ticker_names.get(t, t) for t in top5.index]
     with col_bar:
-        colors = ['#2ecc71' if v >= 0 else '#e74c3c' for v in top5.values]
+        # CORRECTION ICI : Changement de 'colors' en 'bar_colors'
+        bar_colors = ['#2ecc71' if v >= 0 else '#e74c3c' for v in top5.values]
         fig_bar = go.Figure(go.Bar(
             x=top5_labels,
             y=top5.values,
-            marker_color=colors,
+            marker_color=bar_colors,  # CORRECTION ICI
             text=[f"{v:.2f}%" for v in top5.values],
             textposition='outside'
         ))
@@ -438,7 +439,7 @@ if len(prices_month) >= 2:
     st.dataframe(df_top5, use_container_width=True)
 else:
     st.warning("Pas assez de données disponibles pour calculer le top 5 mensuel.")
-
+    
 # =====================
 # Texte explicatif
 # =====================
