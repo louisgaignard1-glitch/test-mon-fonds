@@ -1,26 +1,31 @@
 """
-factsheet_export.py - v6
-------------------------
+factsheet_export.py - v7 (bilingue FR / EN)
+-------------------------------------------
 Factsheet PDF 3 pages (style asset manager) generee a partir des donnees
 temps reel du portefeuille (prices_eur, indices, rendements) calculees par app.py.
 
-Page 1 : informations, SRI, performance base 100, annees calendaires,
-         performances glissantes, statistiques de risque
-Page 2 : repartition classe d'actifs / zone vs benchmark, secteurs,
-         concentration, principales positions, contributions du mois
-Page 3 : composition complete, historique mensuel, drawdown, volatilite
-         glissante, risques et mentions legales
+Nouveautes v7
+  - parametre lang="fr" | "en" : tous les libelles statiques sont traduits
+    (titres, entetes de tableaux, SRI, mentions legales, graphiques, formats
+    numeriques et dates)
+  - normalisation des index temporels (suppression des fuseaux horaires) avant
+    toute jointure / intersection : normalize_index()
+  - parametre excluded : liste des lignes exclues faute de donnees, mentionnee
+    dans la factsheet
+  - deux boutons de telechargement (FR / EN) dans render_factsheet_section()
 
 Usage dans app.py :
-    from factsheet_export import render_factsheet_section
+    from factsheet_export import render_factsheet_section, normalize_index
     render_factsheet_section(portfolio_index_hedged, bench_index,
                              portfolio_returns_hedged, allocation,
                              ticker_names, weights, prices_eur,
-                             bench_weights=BENCHMARK_WEIGHTS)
+                             bench_weights=bench_weights_eff,
+                             excluded=["Nom de la ligne exclue", ...])
 """
 
 import io
 import datetime
+import threading
 
 import numpy as np
 import pandas as pd
@@ -41,22 +46,9 @@ from reportlab.lib.utils import ImageReader, simpleSplit
 # ═════════════════════════════════════════════════════════
 # PARAMETRES EDITABLES
 # ═════════════════════════════════════════════════════════
-FUND_TITLE = "PORTEFEUILLE MULTI-ACTIFS"
-FUND_SUBTITLE = "Gestion diversifiee - Europe & Etats-Unis - Couverture USD/EUR"
-OBJECTIVE = (
-    "Portefeuille multi-actifs diversifie combinant des actions europeennes et "
-    "americaines en direct et une poche de fonds (alternatif, credit, immobilier, "
-    "marches frontieres). L'objectif est de surperformer un benchmark composite "
-    "sur un horizon de placement de 5 ans, avec une couverture du risque de change "
-    "USD/EUR simulee sur la poche americaine."
-)
 RF = 0.03          # taux sans risque annuel utilise pour Sharpe / alpha
 ANN = 252
 
-BENCH_LABELS = {
-    "IEV": "Europe (IEV)", "SPY": "S&P 500 (SPY)", "TLT": "Oblig. US LT (TLT)",
-    "VNQ": "Immobilier US (VNQ)", "EEM": "Emergents (EEM)",
-}
 # (classe, zone) de chaque composante du benchmark
 BENCH_META = {
     "IEV": ("Actions", "Europe"), "SPY": ("Actions", "Amerique du Nord"),
@@ -108,6 +100,272 @@ def line_meta(t: str) -> dict:
 
 
 # ═════════════════════════════════════════════════════════
+# INTERNATIONALISATION (FR / EN)
+# ═════════════════════════════════════════════════════════
+# La langue courante est stockee par thread : chaque session Streamlit tourne
+# dans son propre thread, deux utilisateurs ne se melangent donc pas.
+_L = threading.local()
+
+
+def _lang() -> str:
+    return getattr(_L, "lang", "fr")
+
+
+def _is_fr() -> bool:
+    return _lang() == "fr"
+
+
+# cle -> (francais, anglais)
+TX = {
+    # en-tete / pied de page
+    "fund_title": ("PORTEFEUILLE MULTI-ACTIFS", "MULTI-ASSET PORTFOLIO"),
+    "fund_sub": ("Gestion diversifiée - Europe & États-Unis - Couverture USD/EUR",
+                 "Diversified management - Europe & United States - USD/EUR hedge"),
+    "hdr_disc": ("Document à usage informatif - Les performances passées ne préjugent pas des performances futures",
+                 "For information purposes only - Past performance is not a reliable indicator of future results"),
+    "as_of": ("Au {d}", "As of {d}"),
+    "hdr_page": ("Factsheet mensuelle - Page {p} / 3", "Monthly factsheet - Page {p} / 3"),
+    "ftr1": ("Données : Yahoo Finance (cours ajustés), calculs en EUR. Couverture de change simulée sans coût. "
+             "Performances avant frais de gestion.",
+             "Data: Yahoo Finance (adjusted prices), calculations in EUR. FX hedge simulated at no cost. "
+             "Performance shown before management fees."),
+    "ftr2": ("Généré le {d}. Ceci n'est pas un conseil en investissement.",
+             "Generated on {d}. This is not investment advice."),
+    "no_data": ("Données insuffisantes", "Insufficient data"),
+
+    # objectif
+    "objective": (
+        "Portefeuille multi-actifs diversifié combinant des actions européennes et américaines en direct et une "
+        "poche de fonds (alternatif, crédit, immobilier, marchés frontières). L'objectif est de surperformer un "
+        "benchmark composite sur un horizon de placement de 5 ans, avec une couverture du risque de change "
+        "USD/EUR simulée sur la poche américaine.",
+        "Diversified multi-asset portfolio combining directly held European and US equities with a bucket of funds "
+        "(alternative, credit, real estate, frontier markets). The objective is to outperform a composite benchmark "
+        "over a 5-year investment horizon, with a simulated USD/EUR currency hedge on the US bucket."),
+
+    # page 1 - informations
+    "sec_info": ("INFORMATIONS", "FUND INFORMATION"),
+    "i_incep": ("Date de lancement", "Inception date"),
+    "i_ccy": ("Devise", "Currency"),
+    "i_univ": ("Univers", "Universe"),
+    "i_univ_v": ("Europe / USA / Fonds", "Europe / US / Funds"),
+    "i_val": ("Valorisation", "Valuation"),
+    "i_val_v": ("Quotidienne", "Daily"),
+    "i_hor": ("Horizon recommandé", "Recommended horizon"),
+    "i_hor_v": ("5 ans", "5 years"),
+    "i_hedge": ("Couverture USD", "USD hedge"),
+    "i_hedge_v": ("Simulée (forward)", "Simulated (forward)"),
+    "i_nl": ("Nombre de lignes", "Number of holdings"),
+    "i_nav": ("VL (base 100)", "NAV (base 100)"),
+    # SRI
+    "sec_sri": ("INDICATEUR DE RISQUE (SRI)", "RISK INDICATOR (SRI)"),
+    "sri_low": ("Risque le plus faible", "Lower risk"),
+    "sri_high": ("Risque le plus élevé", "Higher risk"),
+    "sri_note": ("Classe estimée à partir de la volatilité annualisée depuis l'origine ({v}). "
+                 "Indicatif, hors méthode PRIIPs.",
+                 "Class estimated from annualised volatility since inception ({v}). "
+                 "Indicative only, not PRIIPs methodology."),
+    # indicateurs cles
+    "sec_key": ("INDICATEURS CLÉS (ORIGINE)", "KEY FIGURES (SINCE INCEPTION)"),
+    "k_ann": ("Rendement annualisé", "Annualised return"),
+    "k_vol": ("Volatilité", "Volatility"),
+    "k_sharpe": ("Ratio de Sharpe", "Sharpe ratio"),
+    "k_sortino": ("Ratio de Sortino", "Sortino ratio"),
+    "k_mdd": ("Max drawdown", "Max drawdown"),
+    "k_beta": ("Bêta", "Beta"),
+    "k_te": ("Tracking error", "Tracking error"),
+    # benchmark
+    "sec_bench": ("BENCHMARK COMPOSITE", "COMPOSITE BENCHMARK"),
+    "bl_IEV": ("Europe (IEV)", "Europe (IEV)"),
+    "bl_SPY": ("S&P 500 (SPY)", "S&P 500 (SPY)"),
+    "bl_TLT": ("Oblig. US LT (TLT)", "US long-term bonds (TLT)"),
+    "bl_VNQ": ("Immobilier US (VNQ)", "US real estate (VNQ)"),
+    "bl_EEM": ("Émergents (EEM)", "Emerging markets (EEM)"),
+    # colonne droite
+    "sec_obj": ("ORIENTATION DE GESTION", "INVESTMENT OBJECTIVE"),
+    "sec_perf": ("ÉVOLUTION DE LA PERFORMANCE (BASE 100)", "PERFORMANCE EVOLUTION (BASE 100)"),
+    "sec_cal": ("PERFORMANCES ANNUELLES CALENDAIRES", "CALENDAR YEAR PERFORMANCE"),
+    "cal_note": ("* année en cours", "* year to date"),
+    "leg_port": ("Portefeuille (hedgé USD)", "Portfolio (USD hedged)"),
+    "leg_port_s": ("Portefeuille", "Portfolio"),
+    "leg_bench": ("Benchmark composite", "Composite benchmark"),
+    "leg_bench_s": ("Benchmark", "Benchmark"),
+    # performances glissantes
+    "sec_roll": ("PERFORMANCES GLISSANTES", "ROLLING PERFORMANCE"),
+    "p_1M": ("1 mois", "1 month"), "p_3M": ("3 mois", "3 months"), "p_YTD": ("YTD", "YTD"),
+    "p_1Y": ("1 an", "1 year"), "p_3Y": ("3 ans", "3 years"), "p_5Y": ("5 ans", "5 years"),
+    "p_ITD": ("Origine", "Inception"),
+    "r_cum_p": ("Cumulée portefeuille", "Portfolio cumulative"),
+    "r_cum_b": ("Cumulée benchmark", "Benchmark cumulative"),
+    "r_gap": ("Écart cumulé", "Cumulative gap"),
+    "r_ann_p": ("Annualisée portefeuille", "Portfolio annualised"),
+    "r_ann_b": ("Annualisée benchmark", "Benchmark annualised"),
+    # statistiques
+    "sec_stats": ("STATISTIQUES (PÉRIODES GLISSANTES)", "STATISTICS (ROLLING PERIODS)"),
+    "s_vol_p": ("Volatilité portefeuille", "Portfolio volatility"),
+    "s_vol_b": ("Volatilité benchmark", "Benchmark volatility"),
+    "s_te": ("Tracking error", "Tracking error"),
+    "s_sh_p": ("Sharpe portefeuille", "Portfolio Sharpe"),
+    "s_sh_b": ("Sharpe benchmark", "Benchmark Sharpe"),
+    "s_ir": ("Ratio d'information", "Information ratio"),
+    "s_alpha": ("Alpha annualisé", "Annualised alpha"),
+    "s_beta": ("Bêta", "Beta"),
+    "s_r2": ("R2", "R2"),
+    "s_corr": ("Coefficient de corrélation", "Correlation coefficient"),
+    # risque extreme
+    "sec_ext": ("RISQUE EXTRÊME", "EXTREME RISK"),
+    "e_pos": ("% mois positifs", "% positive months"),
+    "e_best": ("Meilleur mois", "Best month"),
+    "e_worst": ("Pire mois", "Worst month"),
+    "e_dd_p": ("Max DD portef.", "Max DD portfolio"),
+    "e_dd_b": ("Max DD bench.", "Max DD benchmark"),
+    "e_rec_p": ("Recouvrement portef.", "Recovery portfolio"),
+    "e_rec_b": ("Recouvrement bench.", "Recovery benchmark"),
+    "e_var": ("VaR 95% 1 jour", "1-day 95% VaR"),
+    "e_trough": ("Date du point bas", "Trough date"),
+    "e_sortino": ("Sortino", "Sortino"),
+    "ongoing": ("en cours", "ongoing"),
+    "days": ("{n} j", "{n} d"),
+
+    # page 2
+    "sec_cls": ("PAR CLASSE D'ACTIFS (% DE L'ACTIF NET)", "BY ASSET CLASS (% OF NET ASSETS)"),
+    "sec_reg": ("PAR ZONE GÉOGRAPHIQUE (% DE L'ACTIF NET)", "BY REGION (% OF NET ASSETS)"),
+    "sec_sect": ("SECTEURS (POCHE ACTIONS EN DIRECT)", "SECTORS (DIRECT EQUITY BUCKET)"),
+    "sec_conc": ("STRUCTURE ET CONCENTRATION", "STRUCTURE AND CONCENTRATION"),
+    "c_direct": ("Poche actions en direct", "Direct equity bucket"),
+    "c_funds": ("Poche fonds", "Funds bucket"),
+    "c_cash": ("Liquidités", "Cash"),
+    "c_usd": ("Exposition USD (couverte)", "USD exposure (hedged)"),
+    "c_top5": ("5 premières lignes", "Top 5 holdings"),
+    "c_top10": ("10 premières lignes", "Top 10 holdings"),
+    "c_max": ("Poids max d'une ligne", "Largest holding"),
+    "c_eff": ("Nombre de lignes effectif (1/HHI)", "Effective number of holdings (1/HHI)"),
+    "sec_top10": ("10 PRINCIPALES POSITIONS", "TOP 10 HOLDINGS"),
+    "top_right": ("Nombre total de lignes : {n}", "Total number of holdings: {n}"),
+    "h_line": ("Ligne", "Holding"),
+    "h_class": ("Classe", "Asset class"),
+    "h_sector": ("Secteur", "Sector"),
+    "h_region": ("Zone", "Region"),
+    "h_weight": ("Poids", "Weight"),
+    "h_1m_perf": ("Perf. 1 mois", "1M perf."),
+    "top10_total": ("Total 10 premières", "Top 10 total"),
+    "sec_contrib": ("CONTRIBUTION À LA PERFORMANCE", "PERFORMANCE CONTRIBUTION"),
+    "period": ("Période : {p}", "Period: {p}"),
+    "best5": ("5 meilleures contributions", "Top 5 contributors"),
+    "worst5": ("5 contributions les plus négatives", "Top 5 detractors"),
+    "h_contrib": ("Contrib.", "Contrib."),
+    "contrib_note": ("Contribution = poids x performance de la ligne sur 30 jours (en EUR). "
+                     "Approximation : ne tient pas compte de la dérive des poids sur la période.",
+                     "Contribution = weight x 30-day holding performance (in EUR). "
+                     "Approximation: does not account for weight drift over the period."),
+    "to": (" au ", " to "),
+
+    # page 3
+    "sec_comp": ("COMPOSITION DU PORTEFEUILLE", "PORTFOLIO COMPOSITION"),
+    "h_ticker": ("Ticker", "Ticker"),
+    "h_ccy": ("Devise", "Currency"),
+    "h_1m": ("1 mois", "1M"),
+    "h_ytd": ("YTD", "YTD"),
+    "total": ("TOTAL", "TOTAL"),
+    "hedged_abbr": (" h.", " hdg"),
+    "sec_monthly": ("HISTORIQUE DE PERFORMANCE MENSUELLE (%)", "MONTHLY PERFORMANCE HISTORY (%)"),
+    "h_year": ("Année", "Year"),
+    "sec_dd": ("DRAWDOWN", "DRAWDOWN"),
+    "sec_rv": ("VOLATILITÉ GLISSANTE 3 MOIS (ANN.)", "ROLLING 3-MONTH VOLATILITY (ANN.)"),
+    "sec_risk": ("PRINCIPAUX RISQUES ET MENTIONS LÉGALES", "KEY RISKS AND LEGAL NOTICE"),
+    "risks": (
+        "Risque actions : la valeur des actions varie selon des facteurs propres aux sociétés et des facteurs "
+        "économiques ou politiques ; des pertes importantes sont possibles. Risque de change : les titres "
+        "libellés en USD ou CHF exposent le portefeuille aux variations de change ; la couverture USD présentée "
+        "est simulée et sans coût. Risque de taux et de crédit : la poche fonds de crédit est sensible aux "
+        "variations de taux et à la qualité des émetteurs. Risque de liquidité : certains fonds (immobilier, "
+        "marchés frontières) peuvent être moins liquides. Risque de concentration : le portefeuille compte un "
+        "nombre limité de lignes.",
+        "Equity risk: share prices fluctuate with company-specific, economic and political factors, and "
+        "significant losses are possible. Currency risk: securities denominated in USD or CHF expose the "
+        "portfolio to exchange-rate movements; the USD hedge shown is simulated at no cost. Interest-rate and "
+        "credit risk: the credit funds are sensitive to changes in rates and to issuer quality. Liquidity risk: "
+        "some funds (real estate, frontier markets) may be less liquid. Concentration risk: the portfolio holds "
+        "a limited number of positions."),
+    "legal": (
+        "Méthodologie : performances calculées à partir des cours ajustés (dividendes réinvestis) convertis en "
+        "EUR, avec des poids constants (rebalancement quotidien implicite). Benchmark composé d'ETF cotés en USD "
+        "(IEV, SPY, TLT, VNQ, EEM), non convertis en EUR. Sharpe et alpha calculés avec un taux sans risque de "
+        "{rf}. Ce document est communiqué à titre informatif, ne constitue ni un conseil en investissement ni "
+        "une offre d'achat ou de vente. Les performances passées ne sont pas un indicateur fiable des "
+        "performances futures. Tout investissement comporte un risque de perte en capital.",
+        "Methodology: performance is computed from adjusted prices (dividends reinvested) converted to EUR, "
+        "using constant weights (implicit daily rebalancing). The benchmark is made of USD-listed ETFs (IEV, SPY, "
+        "TLT, VNQ, EEM) and is not converted to EUR. Sharpe ratio and alpha use a risk-free rate of {rf}. This "
+        "document is provided for information only and is neither investment advice nor an offer to buy or "
+        "sell. Past performance is not a reliable indicator of future results. All investments carry a risk of "
+        "capital loss."),
+    "excl_note": (
+        "Lignes exclues faute de données exploitables : {names}. Leur poids a été réparti au prorata sur les "
+        "autres lignes.",
+        "Holdings excluded for lack of usable data: {names}. Their weight was reallocated pro rata to the "
+        "remaining holdings."),
+    "months": (["Jan", "Fév", "Mar", "Avr", "Mai", "Jun", "Jul", "Aoû", "Sep", "Oct", "Nov", "Déc"],
+               ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]),
+
+    # interface Streamlit
+    "ui_title": ("Factsheet mensuelle PDF", "Monthly factsheet PDF"),
+    "ui_btn_fr": ("Télécharger la factsheet (PDF, 3 pages)", "Télécharger la factsheet (PDF, 3 pages)"),
+    "ui_btn_en": ("Download factsheet (PDF, 3 pages)", "Download factsheet (PDF, 3 pages)"),
+    "ui_caption": ("Données au {d} - régénérée automatiquement à chaque actualisation des cours.",
+                   "Data as of {d} - regenerated automatically at each price refresh."),
+}
+
+# libelles des categories (cles internes -> francais, anglais)
+DISP = {
+    "Actions": ("Actions", "Equities"),
+    "Credit & Obligations": ("Crédit & Obligations", "Credit & Bonds"),
+    "Alternatif": ("Alternatif", "Alternative"),
+    "Immobilier": ("Immobilier", "Real estate"),
+    "Liquidites": ("Liquidités", "Cash"),
+    "Europe": ("Europe", "Europe"),
+    "Amerique du Nord": ("Amérique du Nord", "North America"),
+    "Marches emergents": ("Marchés émergents", "Emerging markets"),
+    "Energie": ("Énergie", "Energy"),
+    "Conso. discretionnaire": ("Conso. discrétionnaire", "Consumer discr."),
+    "Finance": ("Finance", "Financials"),
+    "Technologie": ("Technologie", "Technology"),
+    "Industrie": ("Industrie", "Industrials"),
+    "Sante": ("Santé", "Health care"),
+    "Services publics": ("Services publics", "Utilities"),
+    "Communication": ("Communication", "Communication"),
+    "Fonds": ("Fonds", "Funds"),
+    "Autre": ("Autre", "Other"),
+}
+
+
+def T(key: str, **kw):
+    pair = TX.get(key)
+    if pair is None:
+        return key
+    s = pair[0] if _is_fr() else pair[1]
+    return s.format(**kw) if kw else s
+
+
+def DL(key: str) -> str:
+    """Libelle d'une categorie (classe, zone, secteur) dans la langue courante."""
+    pair = DISP.get(key)
+    if pair is None:
+        return key
+    return pair[0] if _is_fr() else pair[1]
+
+
+def _ccy(code: str) -> str:
+    return code.replace(" (couvert)", T("hedged_abbr"))
+
+
+def _date(ts, with_time=False) -> str:
+    if _is_fr():
+        return ts.strftime("%d/%m/%Y %H:%M" if with_time else "%d/%m/%Y")
+    return ts.strftime("%d %b %Y %H:%M" if with_time else "%d %b %Y")
+
+
+# ═════════════════════════════════════════════════════════
 # PALETTE & GEOMETRIE
 # ═════════════════════════════════════════════════════════
 P_NAVY = colors.HexColor("#0D2B55")
@@ -125,7 +383,6 @@ P_WHITE = colors.white
 
 C_PORT = "#0D2B55"
 C_BENCH = "#8FA3B8"
-C_ACC = "#5B9BD5"
 
 W, H = A4
 ML = MR = 15 * mm
@@ -147,23 +404,54 @@ def _nan(v):
     return v is None or (isinstance(v, (float, np.floating)) and np.isnan(v))
 
 
-def _fr(s: str) -> str:
-    return s.replace(".", ",")
+def _num(s: str) -> str:
+    """Separateur decimal selon la langue (virgule en FR, point en EN)."""
+    return s.replace(".", ",") if _is_fr() else s
 
 
 def fp(v, d=2, sign=True):
     if _nan(v):
         return "n/a"
-    return _fr(("+" if (sign and v > 0) else "") + f"{v:.{d}f}%")
+    return _num(("+" if (sign and v > 0) else "") + f"{v:.{d}f}%")
 
 
 def fraw(v, d=2):
-    return "n/a" if _nan(v) else _fr(f"{v:.{d}f}")
+    return "n/a" if _nan(v) else _num(f"{v:.{d}f}")
 
 
 def fpl(v, d=2):
     """Pourcentage sans signe force (poids, volatilite)."""
     return fp(v, d, sign=False)
+
+
+# ═════════════════════════════════════════════════════════
+# NORMALISATION DES INDEX TEMPORELS
+# ═════════════════════════════════════════════════════════
+def normalize_index(obj):
+    """
+    Index temporel naif (sans fuseau), a minuit, trie, sans doublons.
+    Fonctionne pour Series et DataFrame.
+    - tz-aware : tz_localize(None) conserve la date murale locale de la bourse
+      (pas de decalage d'un jour comme avec une conversion UTC)
+    - indices a fuseaux mixtes : repli sur UTC puis suppression du fuseau
+    """
+    if obj is None:
+        return None
+    out = obj.copy()
+    try:
+        idx = pd.DatetimeIndex(out.index)
+    except (ValueError, TypeError):
+        idx = pd.DatetimeIndex(pd.to_datetime(out.index, utc=True))
+    if idx.tz is not None:
+        idx = idx.tz_localize(None)
+    out.index = idx.normalize()
+    out = out[~out.index.duplicated(keep="last")]
+    return out.sort_index()
+
+
+def _pct(s):
+    """Rendement simple sans fill implicite (compatible pandas 2.x et 3.x)."""
+    return s / s.shift(1) - 1
 
 
 # ═════════════════════════════════════════════════════════
@@ -270,45 +558,53 @@ def _sri(vol_pct: float) -> int:
     return 7
 
 
+PERIODS = [("1M", 30), ("3M", 91), ("YTD", None), ("1Y", 365),
+           ("3Y", 3 * 365), ("5Y", 5 * 365), ("ITD", "tot")]
+STAT_WINDOWS = [("1Y", 365), ("3Y", 3 * 365), ("5Y", 5 * 365), ("ITD", None)]
+
+
 def build_context(port_idx, bench_idx, prices_eur, allocation, ticker_names,
-                  weights, bench_weights, port_ret=None):
-    port_idx = port_idx.dropna()
-    bench_idx = bench_idx.dropna()
+                  weights, bench_weights, port_ret=None, excluded=None):
+    # --- normalisation des index (tz, doublons, ordre) AVANT toute intersection
+    port_idx = normalize_index(port_idx).dropna()
+    bench_idx = normalize_index(bench_idx).dropna()
+    prices_eur = normalize_index(prices_eur) if prices_eur is not None else None
+
     common = port_idx.index.intersection(bench_idx.index)
+    if len(common) < 3:
+        raise ValueError("Historique commun portefeuille / benchmark insuffisant")
     port_idx, bench_idx = port_idx.loc[common], bench_idx.loc[common]
-    rp = port_idx.pct_change().dropna()
-    rb = bench_idx.pct_change().dropna()
+    rp = _pct(port_idx).dropna()
+    rb = _pct(bench_idx).dropna()
 
     first, last = port_idx.index[0], port_idx.index[-1]
     days_total = (last - first).days
 
     D = dict(port=port_idx, bench=bench_idx, rp=rp, rb=rb, first=first, last=last,
              days_total=days_total, prices=prices_eur, allocation=allocation,
-             names=ticker_names, weights=weights, bench_weights=bench_weights or {})
-    D["as_of"] = last.strftime("%d/%m/%Y")
-    D["today"] = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
-    D["inception"] = first.strftime("%d/%m/%Y")
+             names=ticker_names, weights=weights, bench_weights=bench_weights or {},
+             excluded=list(excluded or []))
+    D["as_of"] = _date(last)
+    D["today"] = _date(pd.Timestamp(datetime.datetime.now()), with_time=True)
+    D["inception"] = _date(first)
 
     # performances glissantes
-    periods = [("1 mois", 30), ("3 mois", 91), ("YTD", None), ("1 an", 365),
-               ("3 ans", 3 * 365), ("5 ans", 5 * 365), ("Origine", "tot")]
     rows = []
-    for lbl, d in periods:
+    for key, d in PERIODS:
         if d is None:
             p, b, nd = _ret_ytd(port_idx), _ret_ytd(bench_idx), None
         elif d == "tot":
             p, b, nd = _ret_total(port_idx), _ret_total(bench_idx), days_total
         else:
             p, b, nd = _ret_since(port_idx, d), _ret_since(bench_idx, d), d
-        rows.append(dict(label=lbl, p=p, b=b,
+        rows.append(dict(key=key, p=p, b=b,
                          pa=_annualize(p, nd) if nd else np.nan,
                          ba=_annualize(b, nd) if nd else np.nan))
     D["perf_rows"] = rows
 
     # stats par fenetre
-    D["stats"] = {k: _win_stats(rp, rb, d) for k, d in
-                  [("1 an", 365), ("3 ans", 3 * 365), ("5 ans", 5 * 365), ("Origine", None)]}
-    full = D["stats"]["Origine"]
+    D["stats"] = {k: _win_stats(rp, rb, d) for k, d in STAT_WINDOWS}
+    full = D["stats"]["ITD"]
     D["vol"] = full["vol"]
     D["sri"] = _sri(full["vol"])
 
@@ -348,8 +644,8 @@ def build_context(port_idx, bench_idx, prices_eur, allocation, ticker_names,
     # allocation par classe / zone (portefeuille et benchmark)
     cls_p, reg_p = {k: 0.0 for k in CLS_ORDER}, {k: 0.0 for k in REG_ORDER}
     for L in lines:
-        cls_p[L["cls"]] += L["w"]
-        reg_p[L["region"]] += L["w"]
+        cls_p[L["cls"]] = cls_p.get(L["cls"], 0.0) + L["w"]
+        reg_p[L["region"]] = reg_p.get(L["region"], 0.0) + L["w"]
     cls_p["Liquidites"] += cash * 100
     reg_p["Liquidites"] += cash * 100
     cls_b, reg_b = {k: 0.0 for k in CLS_ORDER}, {k: 0.0 for k in REG_ORDER}
@@ -372,7 +668,7 @@ def build_context(port_idx, bench_idx, prices_eur, allocation, ticker_names,
     D["period_1m"] = ""
     if prices_eur is not None and not prices_eur.empty:
         e = prices_eur.index[-1]
-        D["period_1m"] = f"{(e - pd.Timedelta(days=30)).strftime('%d/%m/%Y')} au {e.strftime('%d/%m/%Y')}"
+        D["period_1m"] = f"{_date(e - pd.Timedelta(days=30))}{T('to')}{_date(e)}"
     return D
 
 
@@ -405,9 +701,9 @@ def _png(fig, dpi=220) -> bytes:
     return buf.getvalue()
 
 
-def _empty(w, h, msg="Donnees insuffisantes"):
+def _empty(w, h, msg=None):
     fig, ax = _fig(w, h)
-    ax.text(0.5, 0.5, msg, ha="center", va="center", color="#5A7490", fontsize=8)
+    ax.text(0.5, 0.5, msg or T("no_data"), ha="center", va="center", color="#5A7490", fontsize=8)
     ax.axis("off")
     return _png(fig)
 
@@ -429,8 +725,8 @@ def g_perf(D, w, h):
     p100, b100 = p / p.iloc[0] * 100, b / b.iloc[0] * 100
     fig, ax = _fig(w, h)
     ax.fill_between(p100.index, p100, 100, where=(p100 >= 100), color=C_PORT, alpha=0.08)
-    ax.plot(b100.index, b100, color=C_BENCH, lw=1.2, label="Benchmark composite")
-    ax.plot(p100.index, p100, color=C_PORT, lw=1.7, label="Portefeuille (hedge USD)")
+    ax.plot(b100.index, b100, color=C_BENCH, lw=1.2, label=T("leg_bench"))
+    ax.plot(p100.index, p100, color=C_PORT, lw=1.7, label=T("leg_port"))
     ax.axhline(100, color="#B8CDE4", lw=0.6)
     for s, col in ((p100, C_PORT), (b100, "#5A7490")):
         ax.annotate(f"{s.iloc[-1]:.0f}", xy=(s.index[-1], s.iloc[-1]), xytext=(3, 0),
@@ -453,15 +749,15 @@ def g_calendar(D, w, h):
     bw = 0.38
     vp = cp.values
     vb = [cb.get(y, np.nan) for y in years]
-    ax.bar(x - bw / 2, vp, bw, color=C_PORT, label="Portefeuille")
-    ax.bar(x + bw / 2, vb, bw, color=C_BENCH, label="Benchmark")
+    ax.bar(x - bw / 2, vp, bw, color=C_PORT, label=T("leg_port_s"))
+    ax.bar(x + bw / 2, vb, bw, color=C_BENCH, label=T("leg_bench_s"))
     for xi, v in zip(x - bw / 2, vp):
         if not _nan(v):
-            ax.text(xi, v + (0.6 if v >= 0 else -0.6), f"{v:.1f}".replace(".", ","),
+            ax.text(xi, v + (0.6 if v >= 0 else -0.6), _num(f"{v:.1f}"),
                     ha="center", va="bottom" if v >= 0 else "top", fontsize=5.5, color=C_PORT)
     for xi, v in zip(x + bw / 2, vb):
         if not _nan(v):
-            ax.text(xi, v + (0.6 if v >= 0 else -0.6), f"{v:.1f}".replace(".", ","),
+            ax.text(xi, v + (0.6 if v >= 0 else -0.6), _num(f"{v:.1f}"),
                     ha="center", va="bottom" if v >= 0 else "top", fontsize=5.5, color="#5A7490")
     last_y = D["last"].year
     ax.set_xticks(x)
@@ -471,7 +767,7 @@ def g_calendar(D, w, h):
     ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:.0f}%"))
     ax.legend(loc="upper left", ncol=2, frameon=True, handlelength=1.2)
     lo, hi = np.nanmin(list(vp) + vb), np.nanmax(list(vp) + vb)
-    ax.set_ylim(min(lo * 1.3, -2), hi * 1.3 + 2)
+    ax.set_ylim(min(lo * 1.3, -2), hi * 1.5 + 4)   # marge haute : la legende ne masque aucune etiquette
     return _png(fig)
 
 
@@ -479,20 +775,21 @@ def g_compare(pd_, bd_, order, w, h):
     fig, ax = _fig(w, h)
     keys = [k for k in order if pd_.get(k, 0) > 0.05 or bd_.get(k, 0) > 0.05]
     if not keys:
+        plt.close(fig)
         return _empty(w, h)
     y = np.arange(len(keys))
     bh = 0.36
     pv = [pd_.get(k, 0) for k in keys]
     bv = [bd_.get(k, 0) for k in keys]
-    ax.barh(y - bh / 2, pv, bh, color=C_PORT, label="Portefeuille")
-    ax.barh(y + bh / 2, bv, bh, color=C_BENCH, label="Benchmark")
+    ax.barh(y - bh / 2, pv, bh, color=C_PORT, label=T("leg_port_s"))
+    ax.barh(y + bh / 2, bv, bh, color=C_BENCH, label=T("leg_bench_s"))
     mx = max(pv + bv) or 1
     for yi, v in zip(y - bh / 2, pv):
-        ax.text(v + mx * 0.015, yi, f"{v:.1f}%".replace(".", ","), va="center", fontsize=6, color=C_PORT)
+        ax.text(v + mx * 0.015, yi, _num(f"{v:.1f}%"), va="center", fontsize=6, color=C_PORT)
     for yi, v in zip(y + bh / 2, bv):
-        ax.text(v + mx * 0.015, yi, f"{v:.1f}%".replace(".", ","), va="center", fontsize=6, color="#5A7490")
+        ax.text(v + mx * 0.015, yi, _num(f"{v:.1f}%"), va="center", fontsize=6, color="#5A7490")
     ax.set_yticks(y)
-    ax.set_yticklabels(keys)
+    ax.set_yticklabels([DL(k) for k in keys])
     ax.invert_yaxis()
     ax.set_xlim(0, mx * 1.22)
     ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:.0f}%"))
@@ -513,9 +810,9 @@ def g_sectors(D, w, h):
     cols = [shades[min(i, len(shades) - 1)] for i in range(len(names))]
     ax.barh(range(len(names)), vals, color=cols, height=0.6)
     for i, v in enumerate(vals):
-        ax.text(v + max(vals) * 0.02, i, f"{v:.1f}%".replace(".", ","), va="center", fontsize=6.5, color=C_PORT)
+        ax.text(v + max(vals) * 0.02, i, _num(f"{v:.1f}%"), va="center", fontsize=6.5, color=C_PORT)
     ax.set_yticks(range(len(names)))
-    ax.set_yticklabels(names)
+    ax.set_yticklabels([DL(n) for n in names])
     ax.invert_yaxis()
     ax.set_xlim(0, max(vals) * 1.2)
     ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:.0f}%"))
@@ -529,10 +826,14 @@ def g_drawdown(D, w, h):
     dd, ddb = D["dd"], D["dd_b"]
     fig, ax = _fig(w, h)
     ax.fill_between(dd.index, dd, 0, color=C_PORT, alpha=0.14)
-    ax.plot(dd.index, dd, color=C_PORT, lw=1.1, label="Portefeuille")
-    ax.plot(ddb.index, ddb, color=C_BENCH, lw=1.0, label="Benchmark")
-    ax.annotate(f"{D['maxdd']:.1f}%".replace(".", ","), xy=(D["dd_date"], D["maxdd"]),
-                xytext=(14, 8), textcoords="offset points", fontsize=6.5, color=C_PORT,
+    ax.plot(dd.index, dd, color=C_PORT, lw=1.1, label=T("leg_port_s"))
+    ax.plot(ddb.index, ddb, color=C_BENCH, lw=1.0, label=T("leg_bench_s"))
+    # annotation placee a gauche du point bas s'il est proche du bord droit (evite le rognage)
+    span = (dd.index[-1] - dd.index[0]).total_seconds() or 1
+    frac = (D["dd_date"] - dd.index[0]).total_seconds() / span
+    dx, ha = ((-16, "right") if frac > 0.7 else (14, "left"))
+    ax.annotate(_num(f"{D['maxdd']:.1f}%"), xy=(D["dd_date"], D["maxdd"]),
+                xytext=(dx, 8), textcoords="offset points", fontsize=6.5, color=C_PORT, ha=ha,
                 arrowprops=dict(arrowstyle="->", color=C_PORT, lw=0.6))
     _date_axis(ax, D["days_total"])
     ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:.0f}%"))
@@ -549,8 +850,8 @@ def g_rollvol(D, w, h):
     vp = rp.rolling(win).std() * np.sqrt(ANN) * 100
     vb = rb.rolling(win).std() * np.sqrt(ANN) * 100
     fig, ax = _fig(w, h)
-    ax.plot(vb.index, vb, color=C_BENCH, lw=1.0, label="Benchmark")
-    ax.plot(vp.index, vp, color=C_PORT, lw=1.3, label="Portefeuille")
+    ax.plot(vb.index, vb, color=C_BENCH, lw=1.0, label=T("leg_bench_s"))
+    ax.plot(vp.index, vp, color=C_PORT, lw=1.3, label=T("leg_port_s"))
     _date_axis(ax, D["days_total"])
     ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:.0f}%"))
     ax.grid(True, axis="y", linestyle="--")
@@ -670,12 +971,13 @@ def _header(c, D, page):
     _rect(c, 0, H - HDR_H, W, HDR_H, fill=P_NAVY)
     _rect(c, 0, H - HDR_H, 4 * mm, HDR_H, fill=P_BLUE2)
     _hline(c, 0, W, H - HDR_H, color=P_BLUE3, lw=1.2)
-    _text(c, ML + 1 * mm, H - 10.5 * mm, FUND_TITLE, "Helvetica-Bold", 14, P_WHITE)
-    _text(c, ML + 1 * mm, H - 16.5 * mm, FUND_SUBTITLE, "Helvetica", 7.5, colors.HexColor("#8AAFD0"))
-    _text(c, ML + 1 * mm, H - 21 * mm, "Document a usage informatif - Les performances passees ne presagent pas des performances futures",
+    _text(c, ML + 1 * mm, H - 10.5 * mm, T("fund_title"), "Helvetica-Bold", 14, P_WHITE)
+    _text(c, ML + 1 * mm, H - 16.5 * mm, T("fund_sub"), "Helvetica", 7.5, colors.HexColor("#8AAFD0"))
+    _text(c, ML + 1 * mm, H - 21 * mm, T("hdr_disc"),
           "Helvetica-Oblique", 5.5, colors.HexColor("#6A90B0"))
-    _text(c, W - MR, H - 10.5 * mm, f"Au {D['as_of']}", "Helvetica-Bold", 10, colors.HexColor("#A0C4E0"), "right")
-    _text(c, W - MR, H - 16.5 * mm, f"Factsheet mensuelle - Page {page} / 3", "Helvetica", 7,
+    _text(c, W - MR, H - 10.5 * mm, T("as_of", d=D["as_of"]), "Helvetica-Bold", 10,
+          colors.HexColor("#A0C4E0"), "right")
+    _text(c, W - MR, H - 16.5 * mm, T("hdr_page", p=page), "Helvetica", 7,
           colors.HexColor("#8AAFD0"), "right")
     return H - HDR_H - GAP
 
@@ -683,12 +985,8 @@ def _header(c, D, page):
 def _footer(c, D):
     _rect(c, 0, 0, W, FTR_H, fill=P_NAVY)
     _hline(c, 0, W, FTR_H, color=P_BLUE3, lw=0.6)
-    _text(c, ML, 6.2 * mm,
-          "Donnees : Yahoo Finance (cours ajustes), calculs en EUR. Couverture de change simulee sans cout. "
-          "Performances nettes de frais de gestion non incluses.",
-          "Helvetica-Oblique", 5.2, colors.HexColor("#8AAFD0"))
-    _text(c, ML, 3.2 * mm, f"Genere le {D['today']}. Ceci n'est pas un conseil en investissement.",
-          "Helvetica-Oblique", 5.2, colors.HexColor("#8AAFD0"))
+    _text(c, ML, 6.2 * mm, T("ftr1"), "Helvetica-Oblique", 5.2, colors.HexColor("#8AAFD0"))
+    _text(c, ML, 3.2 * mm, T("ftr2", d=D["today"]), "Helvetica-Oblique", 5.2, colors.HexColor("#8AAFD0"))
 
 
 # ═════════════════════════════════════════════════════════
@@ -703,21 +1001,21 @@ def _page1(c, D):
     RX = ML + LW + GP
 
     # ---- colonne gauche
-    yl = _sec(c, ML, top, "INFORMATIONS", LW)
+    yl = _sec(c, ML, top, T("sec_info"), LW)
     info = [
-        ["Date de lancement", D["inception"]],
-        ["Devise", "EUR"],
-        ["Univers", "Europe / USA / Fonds"],
-        ["Valorisation", "Quotidienne"],
-        ["Horizon recommande", "5 ans"],
-        ["Couverture USD", "Simulee (forward)"],
-        ["Nombre de lignes", str(D["n_lines"])],
-        ["VL (base 100)", fraw(D["port"].iloc[-1] / D["port"].iloc[0] * 100)],
+        [T("i_incep"), D["inception"]],
+        [T("i_ccy"), "EUR"],
+        [T("i_univ"), T("i_univ_v")],
+        [T("i_val"), T("i_val_v")],
+        [T("i_hor"), T("i_hor_v")],
+        [T("i_hedge"), T("i_hedge_v")],
+        [T("i_nl"), str(D["n_lines"])],
+        [T("i_nav"), fraw(D["port"].iloc[-1] / D["port"].iloc[0] * 100)],
     ]
     yl = _trows(c, ML, yl, info, [26 * mm, LW - 26 * mm], rh=4.4 * mm, signed=False)
     yl -= GAP
 
-    yl = _sec(c, ML, yl, "INDICATEUR DE RISQUE (SRI)", LW)
+    yl = _sec(c, ML, yl, T("sec_sri"), LW)
     bw7 = LW / 7
     for i in range(1, 8):
         act = (i == D["sri"])
@@ -726,43 +1024,43 @@ def _page1(c, D):
         _text(c, ML + (i - 1) * bw7 + bw7 / 2, yl - 4.7 * mm, str(i), "Helvetica-Bold", 9,
               P_WHITE if act else P_MUTED, "center")
     yl -= 7 * mm + 1.2 * mm
-    _text(c, ML, yl - 5, "Risque le plus faible", "Helvetica", 5.2, P_MUTED)
-    _text(c, ML + LW, yl - 5, "Risque le plus eleve", "Helvetica", 5.2, P_MUTED, "right")
+    _text(c, ML, yl - 5, T("sri_low"), "Helvetica", 5.2, P_MUTED)
+    _text(c, ML + LW, yl - 5, T("sri_high"), "Helvetica", 5.2, P_MUTED, "right")
     yl -= 3.5 * mm
-    yl = _para(c, ML, yl, f"Classe estimee a partir de la volatilite annualisee depuis l'origine "
-               f"({fpl(D['vol'], 1)}). Indicatif, hors methode PRIIPs.", LW, 5.4, 6.6, P_MUTED)
+    yl = _para(c, ML, yl, T("sri_note", v=fpl(D["vol"], 1)), LW, 5.4, 6.6, P_MUTED)
     yl -= GAP
 
-    yl = _sec(c, ML, yl, "INDICATEURS CLES (ORIGINE)", LW)
-    m = D["stats"]["Origine"]
+    yl = _sec(c, ML, yl, T("sec_key"), LW)
+    m = D["stats"]["ITD"]
     key = [
-        ["Rendement annualise", fp(D["ann_since"])],
-        ["Volatilite", fpl(m["vol"])],
-        ["Ratio de Sharpe", fraw(m["sharpe"])],
-        ["Ratio de Sortino", fraw(D["sortino"])],
-        ["Max drawdown", fp(D["maxdd"])],
-        ["Beta", fraw(m["beta"])],
-        ["Tracking error", fpl(m["te"])],
+        [T("k_ann"), fp(D["ann_since"])],
+        [T("k_vol"), fpl(m["vol"])],
+        [T("k_sharpe"), fraw(m["sharpe"])],
+        [T("k_sortino"), fraw(D["sortino"])],
+        [T("k_mdd"), fp(D["maxdd"])],
+        [T("k_beta"), fraw(m["beta"])],
+        [T("k_te"), fpl(m["te"])],
     ]
     yl = _trows(c, ML, yl, key, [32 * mm, LW - 32 * mm], aligns=["left", "right"], rh=4.2 * mm)
     yl -= GAP
 
-    yl = _sec(c, ML, yl, "BENCHMARK COMPOSITE", LW)
-    brow = [[BENCH_LABELS.get(k, k), fpl(v * 100, 0)] for k, v in D["bench_weights"].items()]
+    yl = _sec(c, ML, yl, T("sec_bench"), LW)
+    brow = [[T("bl_" + k) if ("bl_" + k) in TX else k, fpl(v * 100, 0)]
+            for k, v in D["bench_weights"].items()]
     rest = 100 - sum(v * 100 for v in D["bench_weights"].values())
     if rest > 0.5:
-        brow.append(["Liquidites", fpl(rest, 0)])
+        brow.append([DL("Liquidites"), fpl(rest, 0)])
     yl = _trows(c, ML, yl, brow, [LW - 16 * mm, 16 * mm], aligns=["left", "right"], rh=4.0 * mm, signed=False)
 
     # ---- colonne droite
-    yr = _sec(c, RX, top, "ORIENTATION DE GESTION", RW)
-    yr = _para(c, RX + 0.5 * mm, yr, OBJECTIVE, RW - 1 * mm, 6.6, 8.2)
+    yr = _sec(c, RX, top, T("sec_obj"), RW)
+    yr = _para(c, RX + 0.5 * mm, yr, T("objective"), RW - 1 * mm, 6.6, 8.2)
     yr -= 1.5 * mm
-    yr = _sec(c, RX, yr, "EVOLUTION DE LA PERFORMANCE (BASE 100)", RW)
+    yr = _sec(c, RX, yr, T("sec_perf"), RW)
     ch = 56 * mm
     _img(c, g_perf(D, RW, ch), RX, yr - ch, RW, ch)
     yr -= ch + GAP
-    yr = _sec(c, RX, yr, "PERFORMANCES ANNUELLES CALENDAIRES", RW, right="* annee en cours")
+    yr = _sec(c, RX, yr, T("sec_cal"), RW, right=T("cal_note"))
     ch2 = 42 * mm
     _img(c, g_calendar(D, RW, ch2), RX, yr - ch2, RW, ch2)
     yr -= ch2
@@ -770,18 +1068,18 @@ def _page1(c, D):
     y = min(yl, yr) - GAP
 
     # ---- performances glissantes
-    y = _sec(c, ML, y, "PERFORMANCES GLISSANTES", right=f"Au {D['as_of']}")
-    labels = [r["label"] for r in D["perf_rows"]]
+    y = _sec(c, ML, y, T("sec_roll"), right=T("as_of", d=D["as_of"]))
+    labels = [T("p_" + r["key"]) for r in D["perf_rows"]]
     wl = 38 * mm
     wc = (CW - wl) / len(labels)
     y = _thead(c, ML, y, [""] + labels, [wl] + [wc] * len(labels))
     rows = [
-        ["Cumulee portefeuille"] + [fp(r["p"]) for r in D["perf_rows"]],
-        ["Cumulee benchmark"] + [fp(r["b"]) for r in D["perf_rows"]],
-        ["Ecart cumule"] + [fp(r["p"] - r["b"]) if not (_nan(r["p"]) or _nan(r["b"])) else "n/a"
-                            for r in D["perf_rows"]],
-        ["Annualisee portefeuille"] + [fp(r["pa"]) for r in D["perf_rows"]],
-        ["Annualisee benchmark"] + [fp(r["ba"]) for r in D["perf_rows"]],
+        [T("r_cum_p")] + [fp(r["p"]) for r in D["perf_rows"]],
+        [T("r_cum_b")] + [fp(r["b"]) for r in D["perf_rows"]],
+        [T("r_gap")] + [fp(r["p"] - r["b"]) if not (_nan(r["p"]) or _nan(r["b"])) else "n/a"
+                        for r in D["perf_rows"]],
+        [T("r_ann_p")] + [fp(r["pa"]) for r in D["perf_rows"]],
+        [T("r_ann_b")] + [fp(r["ba"]) for r in D["perf_rows"]],
     ]
     y = _trows(c, ML, y, rows, [wl] + [wc] * len(labels),
                aligns=["left"] + ["right"] * len(labels), rh=4.3 * mm)
@@ -791,44 +1089,44 @@ def _page1(c, D):
     sw = 118 * mm
     sx = ML + sw + 4 * mm
     sw2 = CW - sw - 4 * mm
-    ys = _sec(c, ML, y, "STATISTIQUES (PERIODES GLISSANTES)", sw)
-    per = ["1 an", "3 ans", "5 ans", "Origine"]
+    ys = _sec(c, ML, y, T("sec_stats"), sw)
+    per = [k for k, _ in STAT_WINDOWS]
     w0 = 46 * mm
     wp = (sw - w0) / 4
-    ys = _thead(c, ML, ys, [""] + per, [w0] + [wp] * 4)
+    ys = _thead(c, ML, ys, [""] + [T("p_" + k) for k in per], [w0] + [wp] * 4)
     S = D["stats"]
 
     def srow(lbl, k, f):
         return [lbl] + [f(S[p][k]) for p in per]
     rows = [
-        srow("Volatilite portefeuille", "vol", fpl),
-        srow("Volatilite benchmark", "vol_b", fpl),
-        srow("Tracking error", "te", fpl),
-        srow("Sharpe portefeuille", "sharpe", fraw),
-        srow("Sharpe benchmark", "sharpe_b", fraw),
-        srow("Ratio d'information", "ir", fraw),
-        srow("Alpha annualise", "alpha", lambda v: fp(v)),
-        srow("Beta", "beta", fraw),
-        srow("R2", "r2", fraw),
-        srow("Coefficient de correlation", "corr", fraw),
+        srow(T("s_vol_p"), "vol", fpl),
+        srow(T("s_vol_b"), "vol_b", fpl),
+        srow(T("s_te"), "te", fpl),
+        srow(T("s_sh_p"), "sharpe", fraw),
+        srow(T("s_sh_b"), "sharpe_b", fraw),
+        srow(T("s_ir"), "ir", fraw),
+        srow(T("s_alpha"), "alpha", lambda v: fp(v)),
+        srow(T("s_beta"), "beta", fraw),
+        srow(T("s_r2"), "r2", fraw),
+        srow(T("s_corr"), "corr", fraw),
     ]
     ys = _trows(c, ML, ys, rows, [w0] + [wp] * 4, aligns=["left"] + ["right"] * 4, rh=4.1 * mm)
 
-    yb = _sec(c, sx, y, "RISQUE EXTREME", sw2)
-    rec = lambda d: "en cours" if d is None else f"{d} j"
+    yb = _sec(c, sx, y, T("sec_ext"), sw2)
+    rec = lambda d: T("ongoing") if d is None else T("days", n=d)
     rows = [
-        ["% mois positifs", fpl(D["pos_months"], 1)],
-        ["Meilleur mois", fp(D["best_m"])],
-        ["Pire mois", fp(D["worst_m"])],
-        ["Max DD portef.", fp(D["maxdd"])],
-        ["Max DD bench.", fp(D["maxdd_b"])],
-        ["Recouvrement portef.", rec(D["dd_rec"])],
-        ["Recouvrement bench.", rec(D["dd_rec_b"])],
-        ["VaR 95% 1 jour", fp(D["var95"])],
-        ["Date du point bas", D["dd_date"].strftime("%d/%m/%Y")],
-        ["Sortino", fraw(D["sortino"])],
+        [T("e_pos"), fpl(D["pos_months"], 1)],
+        [T("e_best"), fp(D["best_m"])],
+        [T("e_worst"), fp(D["worst_m"])],
+        [T("e_dd_p"), fp(D["maxdd"])],
+        [T("e_dd_b"), fp(D["maxdd_b"])],
+        [T("e_rec_p"), rec(D["dd_rec"])],
+        [T("e_rec_b"), rec(D["dd_rec_b"])],
+        [T("e_var"), fp(D["var95"])],
+        [T("e_trough"), _date(D["dd_date"])],
+        [T("e_sortino"), fraw(D["sortino"])],
     ]
-    _trows(c, sx, yb, rows, [sw2 - 19 * mm, 19 * mm], aligns=["left", "right"], rh=4.1 * mm)
+    _trows(c, sx, yb, rows, [sw2 - 21 * mm, 21 * mm], aligns=["left", "right"], rh=4.1 * mm)
 
 
 # ═════════════════════════════════════════════════════════
@@ -841,18 +1139,18 @@ def _page2(c, D):
     X2 = ML + HW + 5 * mm
 
     # ligne 1 : classe d'actifs / zone
-    y1 = _sec(c, ML, y, "PAR CLASSE D'ACTIFS (% DE L'ACTIF NET)", HW)
-    _sec(c, X2, y, "PAR ZONE GEOGRAPHIQUE (% DE L'ACTIF NET)", HW)
+    y1 = _sec(c, ML, y, T("sec_cls"), HW)
+    _sec(c, X2, y, T("sec_reg"), HW)
     ch = 46 * mm
     _img(c, g_compare(D["cls_p"], D["cls_b"], CLS_ORDER, HW, ch), ML, y1 - ch, HW, ch)
     _img(c, g_compare(D["reg_p"], D["reg_b"], REG_ORDER, HW, ch), X2, y1 - ch, HW, ch)
     y = y1 - ch - GAP
 
     # ligne 2 : secteurs / concentration
-    y2 = _sec(c, ML, y, "SECTEURS (POCHE ACTIONS EN DIRECT)", HW)
+    y2 = _sec(c, ML, y, T("sec_sect"), HW)
     ch2 = 44 * mm
     _img(c, g_sectors(D, HW, ch2), ML, y2 - ch2, HW, ch2)
-    yc = _sec(c, X2, y, "STRUCTURE ET CONCENTRATION", HW)
+    yc = _sec(c, X2, y, T("sec_conc"), HW)
     L = D["lines"]
     direct = sum(x["w"] for x in L if x["kind"] == "Direct")
     funds = sum(x["w"] for x in L if x["kind"] == "Fonds")
@@ -861,48 +1159,48 @@ def _page2(c, D):
     top10 = sum(x["w"] for x in L[:10])
     hhi = sum((x["w"] / 100) ** 2 for x in L)
     rows = [
-        ["Poche actions en direct", fpl(direct, 1)],
-        ["Poche fonds", fpl(funds, 1)],
-        ["Liquidites", fpl(D["cash"] * 100, 1)],
-        ["Exposition USD (hedgee)", fpl(usd, 1)],
-        ["5 premieres lignes", fpl(top5, 1)],
-        ["10 premieres lignes", fpl(top10, 1)],
-        ["Poids max d'une ligne", fpl(L[0]["w"], 1) if L else "n/a"],
-        ["Nombre de lignes effectif (1/HHI)", fraw(1 / hhi, 1) if hhi > 0 else "n/a"],
+        [T("c_direct"), fpl(direct, 1)],
+        [T("c_funds"), fpl(funds, 1)],
+        [T("c_cash"), fpl(D["cash"] * 100, 1)],
+        [T("c_usd"), fpl(usd, 1)],
+        [T("c_top5"), fpl(top5, 1)],
+        [T("c_top10"), fpl(top10, 1)],
+        [T("c_max"), fpl(L[0]["w"], 1) if L else "n/a"],
+        [T("c_eff"), fraw(1 / hhi, 1) if hhi > 0 else "n/a"],
     ]
     _trows(c, X2, yc, rows, [HW - 20 * mm, 20 * mm], aligns=["left", "right"], rh=4.5 * mm, signed=False)
     y = y2 - ch2 - GAP
 
     # principales positions
-    y = _sec(c, ML, y, "10 PRINCIPALES POSITIONS", right=f"Nombre total de lignes : {len(L)}")
+    y = _sec(c, ML, y, T("sec_top10"), right=T("top_right", n=len(L)))
     wcol = [50 * mm, 34 * mm, 36 * mm, 28 * mm, 14 * mm, 18 * mm]
-    y = _thead(c, ML, y, ["Ligne", "Classe", "Secteur", "Zone", "Poids", "Perf. 1 mois"], wcol,
+    y = _thead(c, ML, y, [T("h_line"), T("h_class"), T("h_sector"), T("h_region"),
+                          T("h_weight"), T("h_1m_perf")], wcol,
                ["left", "left", "left", "left", "right", "right"])
-    rows = [[x["name"][:30], x["cls"], x["sector"], x["region"], fpl(x["w"], 1), fp(x["p1m"])]
-            for x in L[:10]]
-    rows.append(["Total 10 premieres", "", "", "", fpl(top10, 1), ""])
+    rows = [[x["name"][:30], DL(x["cls"]), DL(x["sector"]), DL(x["region"]),
+             fpl(x["w"], 1), fp(x["p1m"])] for x in L[:10]]
+    rows.append([T("top10_total"), "", "", "", fpl(top10, 1), ""])
     y = _trows(c, ML, y, rows, wcol, aligns=["left"] * 4 + ["right", "right"],
                rh=4.1 * mm, bold_last=True)
     y -= GAP
 
     # contributions
-    y = _sec(c, ML, y, "CONTRIBUTION A LA PERFORMANCE", right=f"Periode : {D['period_1m']}")
+    y = _sec(c, ML, y, T("sec_contrib"), right=T("period", p=D["period_1m"]))
     valid = [x for x in L if not _nan(x["contrib"])]
     best = sorted(valid, key=lambda x: -x["contrib"])[:5]
     worst = sorted(valid, key=lambda x: x["contrib"])[:5]
     wc3 = [HW - 36 * mm, 15 * mm, 21 * mm]
-    _text(c, ML, y - 7, "5 meilleures contributions", "Helvetica-Bold", 6.8, P_NAVY)
-    _text(c, X2, y - 7, "5 contributions les plus negatives", "Helvetica-Bold", 6.8, P_NAVY)
+    _text(c, ML, y - 7, T("best5"), "Helvetica-Bold", 6.8, P_NAVY)
+    _text(c, X2, y - 7, T("worst5"), "Helvetica-Bold", 6.8, P_NAVY)
     yy = y - 3.2 * mm
-    ya = _thead(c, ML, yy, ["Ligne", "Poids", "Contrib."], wc3, ["left", "right", "right"])
-    yb = _thead(c, X2, yy, ["Ligne", "Poids", "Contrib."], wc3, ["left", "right", "right"])
+    hd = [T("h_line"), T("h_weight"), T("h_contrib")]
+    ya = _thead(c, ML, yy, hd, wc3, ["left", "right", "right"])
+    yb = _thead(c, X2, yy, hd, wc3, ["left", "right", "right"])
     fmt = lambda r: [[x["name"][:26], fpl(x["w"], 1), fp(x["contrib"])] for x in r]
     ya = _trows(c, ML, ya, fmt(best), wc3, aligns=["left", "right", "right"], rh=4.1 * mm)
     yb = _trows(c, X2, yb, fmt(worst), wc3, aligns=["left", "right", "right"], rh=4.1 * mm)
     y = min(ya, yb) - 1.5 * mm
-    _para(c, ML, y, "Contribution = poids cible x performance de la ligne sur 30 jours (en EUR). "
-          "Approximation : ne tient pas compte de la derive des poids sur la periode.",
-          CW, 5.2, 6.4, P_MUTED, "Helvetica-Oblique")
+    _para(c, ML, y, T("contrib_note"), CW, 5.2, 6.4, P_MUTED, "Helvetica-Oblique")
 
 
 # ═════════════════════════════════════════════════════════
@@ -913,27 +1211,28 @@ def _page3(c, D):
     _footer(c, D)
 
     # composition complete
-    y = _sec(c, ML, y, "COMPOSITION DU PORTEFEUILLE", right=f"Au {D['as_of']}")
+    y = _sec(c, ML, y, T("sec_comp"), right=T("as_of", d=D["as_of"]))
     wcol = [46 * mm, 26 * mm, 27 * mm, 27 * mm, 15 * mm, 13 * mm, 13 * mm, 13 * mm]
-    y = _thead(c, ML, y, ["Ligne", "Ticker", "Classe", "Zone", "Devise", "Poids", "1 mois", "YTD"],
+    y = _thead(c, ML, y, [T("h_line"), T("h_ticker"), T("h_class"), T("h_region"), T("h_ccy"),
+                          T("h_weight"), T("h_1m"), T("h_ytd")],
                wcol, ["left", "left", "left", "left", "left", "right", "right", "right"])
-    rows = [[x["name"][:28], x["t"], x["cls"][:16], x["region"][:16], x["ccy"].replace(" (couvert)", " h."),
+    rows = [[x["name"][:28], x["t"], DL(x["cls"])[:20], DL(x["region"])[:20], _ccy(x["ccy"]),
              fpl(x["w"], 1), fp(x["p1m"], 1), fp(x["pytd"], 1)] for x in D["lines"]]
     if D["cash"] > 0:
-        rows.append(["Liquidites", "-", "Liquidites", "-", "EUR", fpl(D["cash"] * 100, 1), "", ""])
-    rows.append(["TOTAL", "", "", "", "", "100,0%", "", ""])
+        rows.append([DL("Liquidites"), "-", DL("Liquidites"), "-", "EUR", fpl(D["cash"] * 100, 1), "", ""])
+    rows.append([T("total"), "", "", "", "", fpl(100, 1), "", ""])
     y = _trows(c, ML, y, rows, wcol, aligns=["left"] * 5 + ["right"] * 3, rh=3.85 * mm,
                bold_last=True, size=6.3)
     y -= GAP
 
     # historique mensuel
-    y = _sec(c, ML, y, "HISTORIQUE DE PERFORMANCE MENSUELLE (%)")
+    y = _sec(c, ML, y, T("sec_monthly"))
     mo = D["monthly"]
     years = sorted({k[0] for k in mo.index})[-6:]
-    names = ["Jan", "Fev", "Mar", "Avr", "Mai", "Jun", "Jul", "Aou", "Sep", "Oct", "Nov", "Dec"]
+    names = T("months")
     wy, wa = 15 * mm, 21 * mm
     wm = (CW - wy - wa) / 12
-    y = _thead(c, ML, y, ["Annee"] + names + ["Annee"], [wy] + [wm] * 12 + [wa])
+    y = _thead(c, ML, y, [T("h_year")] + names + [T("h_year")], [wy] + [wm] * 12 + [wa])
     rh = 4.4 * mm
     cal = D["cal_p"]
     for yr in years:
@@ -951,7 +1250,7 @@ def _page3(c, D):
             base = (0.10, 0.55, 0.30) if v >= 0 else (0.80, 0.25, 0.25)
             col = colors.Color(1 - a * (1 - base[0]), 1 - a * (1 - base[1]), 1 - a * (1 - base[2]))
             _rect(c, x0, y - rh, wm, rh, fill=col, stroke=P_WHITE, sw=0.4)
-            _text(c, x0 + wm / 2, y - rh + 1.3 * mm, _fr(f"{v:.1f}"), "Helvetica", 6.2,
+            _text(c, x0 + wm / 2, y - rh + 1.3 * mm, _num(f"{v:.1f}"), "Helvetica", 6.2,
                   P_WHITE if a > 0.55 else P_TEXT, "center")
         ya_v = cal.get(yr, np.nan)
         _rect(c, ML + wy + 12 * wm, y - rh, wa, rh, fill=P_BLUE_L, stroke=P_WHITE, sw=0.4)
@@ -963,84 +1262,88 @@ def _page3(c, D):
     # drawdown / volatilite
     HW = (CW - 5 * mm) / 2
     X2 = ML + HW + 5 * mm
-    y1 = _sec(c, ML, y, "DRAWDOWN", HW)
-    _sec(c, X2, y, "VOLATILITE GLISSANTE 3 MOIS (ANN.)", HW)
+    y1 = _sec(c, ML, y, T("sec_dd"), HW)
+    _sec(c, X2, y, T("sec_rv"), HW)
     ch = 38 * mm
     _img(c, g_drawdown(D, HW, ch), ML, y1 - ch, HW, ch)
     _img(c, g_rollvol(D, HW, ch), X2, y1 - ch, HW, ch)
     y = y1 - ch - GAP
 
     # risques & mentions
-    y = _sec(c, ML, y, "PRINCIPAUX RISQUES ET MENTIONS LEGALES")
-    risks = (
-        "Risque actions : la valeur des actions varie selon des facteurs propres aux societes et des facteurs "
-        "economiques ou politiques ; des pertes importantes sont possibles. Risque de change : les titres "
-        "libelles en USD ou CHF exposent le portefeuille aux variations de change ; la couverture USD presentee "
-        "est simulee et sans cout. Risque de taux et de credit : la poche fonds de credit est sensible aux "
-        "variations de taux et a la qualite des emetteurs. Risque de liquidite : certains fonds (immobilier, "
-        "marches frontieres) peuvent etre moins liquides. Risque de concentration : le portefeuille compte un "
-        "nombre limite de lignes."
-    )
-    y = _para(c, ML, y, risks, CW, 5.8, 7.2)
+    y = _sec(c, ML, y, T("sec_risk"))
+    y = _para(c, ML, y, T("risks"), CW, 5.8, 7.2)
     y -= 1.5 * mm
-    legal = (
-        "Methodologie : performances calculees a partir des cours ajustes (dividendes reinvestis) convertis en EUR, "
-        "avec des poids cibles constants (rebalancement quotidien implicite). Benchmark compose d'ETF cotes en USD "
-        "(IEV, SPY, TLT, VNQ, EEM), non convertis en EUR. Sharpe et alpha calcules avec un taux sans risque de "
-        f"{RF * 100:.1f}%. Ce document est communique a titre informatif, ne constitue ni un conseil en "
-        "investissement ni une offre d'achat ou de vente. Les performances passees ne sont pas un indicateur fiable "
-        "des performances futures. Tout investissement comporte un risque de perte en capital."
-    )
-    _para(c, ML, y, legal, CW, 5.4, 6.8, P_MUTED, "Helvetica-Oblique")
+    y = _para(c, ML, y, T("legal", rf=fpl(RF * 100, 1)), CW, 5.4, 6.8, P_MUTED, "Helvetica-Oblique")
+    if D["excluded"]:
+        y -= 1.2 * mm
+        _para(c, ML, y, T("excl_note", names=", ".join(D["excluded"])), CW, 5.4, 6.8,
+              P_NEG, "Helvetica-Oblique")
 
 
 # ═════════════════════════════════════════════════════════
 # ENTREE PRINCIPALE
 # ═════════════════════════════════════════════════════════
 def generate_factsheet_pdf(port_idx, bench_idx, port_ret, allocation, ticker_names,
-                           weights, prices_eur=None, bench_weights=None) -> bytes:
-    D = build_context(port_idx, bench_idx, prices_eur, allocation, ticker_names,
-                      weights, bench_weights, port_ret)
-    buf = io.BytesIO()
-    c = rl_canvas.Canvas(buf, pagesize=A4)
-    c.setTitle(f"Factsheet - {D['as_of']}")
-    c.setAuthor(FUND_TITLE)
-    _page1(c, D)
-    c.showPage()
-    _page2(c, D)
-    c.showPage()
-    _page3(c, D)
-    c.showPage()
-    c.save()
-    return buf.getvalue()
+                           weights, prices_eur=None, bench_weights=None,
+                           lang="fr", excluded=None) -> bytes:
+    """Genere la factsheet. lang : "fr" (defaut) ou "en"."""
+    lang = "en" if str(lang).lower().startswith("en") else "fr"
+    previous = getattr(_L, "lang", None)
+    _L.lang = lang
+    try:
+        D = build_context(port_idx, bench_idx, prices_eur, allocation, ticker_names,
+                          weights, bench_weights, port_ret, excluded)
+        buf = io.BytesIO()
+        c = rl_canvas.Canvas(buf, pagesize=A4)
+        c.setTitle(f"Factsheet - {D['as_of']}")
+        c.setAuthor(T("fund_title"))
+        _page1(c, D)
+        c.showPage()
+        _page2(c, D)
+        c.showPage()
+        _page3(c, D)
+        c.showPage()
+        c.save()
+        return buf.getvalue()
+    finally:
+        _L.lang = previous or "fr"
 
 
-@st.cache_data(ttl=900, show_spinner="Generation de la factsheet...")
-def _build_cached(cache_key: str, _payload: dict) -> bytes:
-    return generate_factsheet_pdf(**_payload)
+@st.cache_data(ttl=900, show_spinner=False)
+def _build_cached(cache_key: str, lang: str, _payload: dict) -> bytes:
+    return generate_factsheet_pdf(lang=lang, **_payload)
 
 
 def render_factsheet_section(port_idx, bench_idx, port_ret, allocation, ticker_names,
-                             weights, prices_eur=None, bench_weights=None):
-    """Affiche le bouton de telechargement : PDF genere en 1 clic, mis en cache 15 min."""
+                             weights, prices_eur=None, bench_weights=None, excluded=None):
+    """Deux boutons de telechargement (FR / EN). PDF generes en 1 clic, mis en cache 15 min."""
     st.divider()
-    st.subheader("Factsheet mensuelle PDF")
+    st.subheader(f"{TX['ui_title'][0]} / {TX['ui_title'][1]}")
     payload = dict(port_idx=port_idx, bench_idx=bench_idx, port_ret=port_ret,
                    allocation=allocation, ticker_names=ticker_names, weights=weights,
-                   prices_eur=prices_eur, bench_weights=bench_weights)
-    key = f"{port_idx.index[-1]:%Y%m%d}-{float(port_idx.iloc[-1]):.6f}-{len(port_idx)}"
-    try:
-        pdf = _build_cached(key, payload)
-        st.download_button(
-            "Telecharger la factsheet (PDF, 3 pages)",
-            data=pdf,
-            file_name=f"factsheet_{datetime.date.today():%Y%m%d}.pdf",
-            mime="application/pdf",
-            type="primary",
-            use_container_width=True,
-        )
-        st.caption("Donnees au " + port_idx.index[-1].strftime("%d/%m/%Y")
-                   + " - regeneree automatiquement a chaque actualisation des cours.")
-    except Exception as e:
-        st.error(f"Erreur lors de la generation de la factsheet : {e}")
-        raise
+                   prices_eur=prices_eur, bench_weights=bench_weights, excluded=excluded)
+    w_sig = ",".join(f"{t}:{float(w):.6f}" for t, w in weights.items())
+    base_key = (f"{port_idx.index[-1]:%Y%m%d}-{float(port_idx.iloc[-1]):.6f}-{len(port_idx)}-"
+                f"{hash(w_sig)}-{'|'.join(excluded or [])}")
+    today = datetime.date.today()
+    col_fr, col_en = st.columns(2)
+    for col, lang, label, bkey in (
+        (col_fr, "fr", TX["ui_btn_fr"][0], "dl_factsheet_fr"),
+        (col_en, "en", TX["ui_btn_en"][0], "dl_factsheet_en"),
+    ):
+        with col:
+            try:
+                pdf = _build_cached(f"{lang}-{base_key}", lang, payload)
+                st.download_button(
+                    label,
+                    data=pdf,
+                    file_name=f"factsheet_{lang.upper()}_{today:%Y%m%d}.pdf",
+                    mime="application/pdf",
+                    type="primary",
+                    use_container_width=True,
+                    key=bkey,
+                )
+            except Exception as e:
+                st.error(f"[{lang.upper()}] Erreur lors de la génération de la factsheet : {e}")
+    st.caption(f"Données au {port_idx.index[-1]:%d/%m/%Y} / Data as of "
+               f"{port_idx.index[-1]:%d %b %Y} - régénérées automatiquement à chaque actualisation des cours.")
