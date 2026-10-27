@@ -1,17 +1,19 @@
-import streamlit as st
-import yfinance as yf
-import pandas as pd
-import numpy as np
-import plotly.graph_objects as go
+import time
 from datetime import datetime, timedelta
 
-from factsheet_export import render_factsheet_section
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+import yfinance as yf
+
+from factsheet_export import render_factsheet_section, normalize_index
 
 st.set_page_config(page_title="Portfolio vs Benchmark", layout="wide")
 st.title("📊 Portfolio vs Benchmark composite")
 
 # =====================
-# Allocation portefeuille
+# Paramètres
 # =====================
 allocation = {
     "TTE.PA": 0.05,
@@ -31,199 +33,280 @@ allocation = {
     "0P00000M6C.F": 0.09,
     "0P00008ESK.F": 0.08,
     "0P0000A6ZG.F": 0.05,
-    "0P0000WHLW.F": 0.08
+    "0P0000WHLW.F": 0.08,
 }
 
 BENCHMARK_WEIGHTS = {"IEV": 0.35, "SPY": 0.20, "TLT": 0.25, "VNQ": 0.10, "EEM": 0.05}
 
+ticker_names = {
+    "TTE.PA": "TotalEnergies", "MC.PA": "LVMH", "INGA.AS": "ING Groep",
+    "SAP.DE": "SAP", "ACLN.SW": "ACLN", "THEON.AS": "Theon Intl",
+    "BOI.PA": "Boiron", "EOAN.DE": "E.ON", "GOOGL": "Alphabet",
+    "META": "Meta", "HWM": "Howmet", "AMZN": "Amazon",
+    "0P0000ZWX4.F": "Helium Fund Perf A EUR",
+    "0P0001861S.F": "Eleva Abs Ret Eurp S EUR",
+    "0P00000M6C.F": "R-co Conviction Credit Euro",
+    "0P00008ESK.F": "AXAIMFIIS US SD HY EUR H",
+    "0P0000A6ZG.F": "Immobilier 21 AC",
+    "0P0000WHLW.F": "GemEquity R",
+}
+
+USD_TICKERS = ["GOOGL", "META", "HWM", "AMZN"]
+
+# Tickers de secours essayés dans l'ordre si le ticker principal ne renvoie rien.
+# Pour un fonds .F qui échoue, ajouter ici une autre cotation (ex. "0P0000XXXX.PA",
+# l'ISIN du fonds ou un ETF proxy), par exemple :
+#   "0P0000A6ZG.F": ["FR0010541557.PA"],
+FALLBACK_TICKERS = {
+    "TTE.PA": ["FP.PA"],
+}
+
+MIN_OBS = 30          # nombre minimal de cours pour qu'une ligne soit utilisable
+STALE_DAYS = 10       # au-delà, un cours est jugé figé (fonds non coté, ticker mort)
+LATE_START_DAYS = 30  # historique démarrant plus tard que la date de début
+
 tickers = list(allocation.keys())
 start = st.sidebar.date_input("Start date", datetime(2020, 1, 1))
+start_iso = pd.Timestamp(start).strftime("%Y-%m-%d")
+
+
+def pct(x):
+    """Rendement simple sans remplissage implicite (compatible pandas 2.x et 3.x)."""
+    return x / x.shift(1) - 1
+
 
 # =====================
-# Chargement des prix
+# Chargement des prix (robuste)
 # =====================
-@st.cache_data(ttl=3600)
-def download_single_ticker(ticker, start, max_retries=3):
-    """Télécharge un ticker avec plusieurs tentatives et solutions de repli."""
-    if ticker == "TTE.PA":
-        for attempt in range(max_retries):
-            try:
-                tmp = yf.download(ticker, start=start, auto_adjust=False, progress=False)
-                if not tmp.empty:
-                    return tmp
-            except:
-                pass
-            try:
-                ticker_obj = yf.Ticker(ticker)
-                tmp = ticker_obj.history(start=start)
-                if not tmp.empty:
-                    return tmp
-            except:
-                pass
-            try:
-                 tmp = yf.download("FP.PA", start=start, auto_adjust=False, progress=False)
-                 if not tmp.empty:
-                     return tmp
-            except:
-                pass
-                
-    else:
-        for attempt in range(max_retries):
-            try:
-                tmp = yf.download(ticker, start=start, auto_adjust=False, progress=False)
-                if not tmp.empty:
-                    return tmp
-            except:
-                pass
-            try:
-                ticker_obj = yf.Ticker(ticker)
-                tmp = ticker_obj.history(start=start)
-                if not tmp.empty:
-                    return tmp
-            except:
-                pass
-    return pd.DataFrame()
+def _extract_close(df):
+    """Extrait une série de cours exploitable d'un DataFrame yfinance, ou None."""
+    if df is None or len(df) == 0:
+        return None
+    if isinstance(df.columns, pd.MultiIndex):
+        df = df.copy()
+        df.columns = df.columns.get_level_values(0)
+    for col in ("Adj Close", "Close"):
+        if col in df.columns:
+            s = df[col]
+            if isinstance(s, pd.DataFrame):      # colonnes dupliquées
+                s = s.iloc[:, 0]
+            s = pd.to_numeric(s, errors="coerce").dropna()
+            s = s[s > 0]
+            if len(s):
+                return normalize_index(s)        # supprime le fuseau horaire
+    return None
 
-@st.cache_data(ttl=3600)
-def load_prices(tickers, start):
-    prices = pd.DataFrame()
-    failed_tickers = []
+
+def _try_symbol(symbol, start_iso, retries=2):
+    """Plusieurs méthodes yfinance, plusieurs tentatives. Retourne une Series ou None."""
+    methods = (
+        lambda: yf.download(symbol, start=start_iso, auto_adjust=False,
+                            progress=False, threads=False),
+        lambda: yf.Ticker(symbol).history(start=start_iso, auto_adjust=False),
+    )
+    for attempt in range(retries):
+        for method in methods:
+            try:
+                s = _extract_close(method())
+                if s is not None:
+                    return s
+            except Exception:
+                continue
+        time.sleep(0.4 * (attempt + 1))
+    return None
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _fetch_close_cached(symbol, start_iso):
+    """Mise en cache des SUCCÈS uniquement : une exception n'est jamais mise en cache,
+    un échec transitoire de Yahoo n'est donc pas figé pendant 1 h."""
+    s = _try_symbol(symbol, start_iso)
+    if s is None:
+        raise ValueError(f"Aucune donnée pour {symbol}")
+    return s
+
+
+def download_single_ticker(ticker, start_iso):
+    """Retourne (Series de cours normalisée, symbole utilisé) ou (None, None)."""
+    for symbol in [ticker] + FALLBACK_TICKERS.get(ticker, []):
+        try:
+            return _fetch_close_cached(symbol, start_iso), symbol
+        except Exception:
+            continue
+    return None, None
+
+
+def load_prices(tickers, start_iso):
+    """Télécharge chaque ticker. Retourne (DataFrame des cours valides, rapport par ticker)."""
+    series, report = {}, {}
     for t in tickers:
-        tmp = download_single_ticker(t, start)
-        if tmp.empty:
-            failed_tickers.append(t)
-            prices[t] = pd.Series(dtype=float, index=pd.DatetimeIndex([]))
+        s, used = download_single_ticker(t, start_iso)
+        if s is None:
+            report[t] = dict(status="failed", source="-", first=None, last=None,
+                             note="Aucune donnée renvoyée par Yahoo Finance")
+        elif len(s) < MIN_OBS:
+            report[t] = dict(status="failed", source=used, first=s.index[0], last=s.index[-1],
+                             note=f"Historique trop court ({len(s)} cours)")
         else:
-            if isinstance(tmp.columns, pd.MultiIndex):
-                tmp.columns = tmp.columns.get_level_values(0)
-            if "Adj Close" in tmp.columns:
-                prices[t] = tmp["Adj Close"]
-            elif "Close" in tmp.columns:
-                prices[t] = tmp["Close"]
-            prices[t].index = pd.to_datetime(prices[t].index)
-    prices = prices.ffill()
-    if not failed_tickers:
-        st.success("Tous les actifs ont été téléchargés avec succès !")
-    else:
-        st.warning(f"Les tickers suivants n'ont pas pu être téléchargés : {', '.join(failed_tickers)}.")
-    return prices, failed_tickers
+            series[t] = s
+            report[t] = dict(status="ok", source=used, first=s.index[0], last=s.index[-1], note="")
+    if not series:
+        return pd.DataFrame(), report
+    prices = pd.concat(series, axis=1).sort_index().ffill()
+    return prices, report
 
-prices, failed_tickers = load_prices(tickers, start)
+
+def load_fx(start_iso):
+    """EUR/USD (USD pour 1 EUR). Repli sur EUR=X (EUR pour 1 USD) inversé."""
+    s, _ = download_single_ticker("EURUSD=X", start_iso)
+    if s is not None and len(s) >= MIN_OBS:
+        return s
+    inv, _ = download_single_ticker("EUR=X", start_iso)
+    if inv is not None and len(inv) >= MIN_OBS:
+        return 1.0 / inv
+    return None
+
+
+with st.spinner("Téléchargement des cours..."):
+    prices, report = load_prices(tickers, start_iso)
 
 if prices.empty:
-    st.error("Aucune donnée de prix n'a pu être téléchargée.")
+    st.error("Aucune donnée de prix n'a pu être téléchargée. Vérifiez votre connexion ou les tickers.")
     st.stop()
 
-# =====================
-# Construction portefeuille
-# =====================
-weights = pd.Series(allocation)
+# ---- EUR/USD : sans taux de change, les lignes USD sont exclues proprement
+fx_series = load_fx(start_iso)
+if fx_series is None:
+    st.warning("⚠️ Taux EUR/USD indisponible : les lignes cotées en USD sont exclues du portefeuille.")
+    for t in USD_TICKERS:
+        if t in prices.columns:
+            prices = prices.drop(columns=t)
+            report[t].update(status="failed", note="Taux EUR/USD indisponible")
 
-with st.expander("🔍 Vérification des poids effectifs du portefeuille"):
-    ticker_names_display = {
-        "TTE.PA": "TotalEnergies", "MC.PA": "LVMH", "INGA.AS": "ING Groep",
-        "SAP.DE": "SAP", "ACLN.SW": "ACLN", "THEON.AS": "Theon Intl",
-        "BOI.PA": "Boiron", "EOAN.DE": "E.ON", "GOOGL": "Alphabet",
-        "META": "Meta", "HWM": "Howmet", "AMZN": "Amazon",
-        "0P0000ZWX4.F": "Helium Fund Perf A EUR",
-        "0P0001861S.F": "Eleva Abs Ret Eurp S EUR",
-        "0P00000M6C.F": "R-co Conviction Credit Euro",
-        "0P00008ESK.F": "AXAIMFIIS US Short Dur HY",
-        "0P0000A6ZG.F": "Immobilier 21 AC",
-        "0P0000WHLW.F": "GemEquity R",
-    }
+# ---- contrôles qualité sur les lignes retenues
+last_global = prices.index[-1]
+for t in prices.columns:
+    r = report[t]
+    if (last_global - r["last"]).days > STALE_DAYS:
+        r.update(status="stale",
+                 note=f"Cours figé depuis le {r['last']:%d/%m/%Y} (dernier cours reporté)")
+    elif (r["first"] - pd.Timestamp(start_iso)).days > LATE_START_DAYS:
+        r.update(status="partial",
+                 note=f"Historique depuis le {r['first']:%d/%m/%Y} (rendement 0 % avant)")
+
+# ---- poids effectifs : lignes exclues réparties au prorata, poids cash conservé
+excluded = [t for t in tickers if t not in prices.columns]
+kept = [t for t in tickers if t in prices.columns]
+total_target = sum(allocation.values())
+w_kept = pd.Series({t: allocation[t] for t in kept})
+weights = w_kept * (total_target / w_kept.sum())
+allocation_eff = weights.to_dict()
+excluded_names = [ticker_names.get(t, t) for t in excluded]
+
+if excluded:
+    lost = sum(allocation[t] for t in excluded) * 100
+    st.warning(
+        f"⚠️ {len(excluded)} ligne(s) exclue(s) faute de données exploitables : "
+        f"{', '.join(excluded_names)} ({lost:.1f}% du poids cible). "
+        "Leur poids est réparti au prorata sur les autres lignes ; "
+        "la mention figure dans la factsheet."
+    )
+issues = [t for t in kept if report[t]["status"] in ("stale", "partial")]
+if issues:
+    st.info("ℹ️ Lignes à surveiller : " + " ; ".join(
+        f"{ticker_names.get(t, t)} ({report[t]['note']})" for t in issues))
+if not excluded and not issues:
+    st.success("Tous les actifs ont été téléchargés avec succès !")
+
+with st.expander("🔍 Qualité des données et poids effectifs du portefeuille"):
+    icons = {"ok": "✅ Disponible", "partial": "⚠️ Historique partiel",
+             "stale": "⚠️ Cours figé", "failed": "❌ Exclu"}
     df_weights = pd.DataFrame({
-        "Actif": [ticker_names_display.get(t, t) for t in weights.index],
-        "Ticker": weights.index,
-        "Poids cible": [f"{weights[t]*100:.1f}%" for t in weights.index],
-        "Statut": ["✅ Disponible" if t not in failed_tickers else "❌ Non téléchargé" for t in weights.index],
-    }).reset_index(drop=True)
-    st.dataframe(df_weights, use_container_width=True)
-    total_effectif = weights.sum() * 100
-    st.caption(f"Total poids effectif : {total_effectif:.1f}% (identique aux poids cibles)")
-
-# =====================
-# Télécharger EUR/USD
-# =====================
-fx = yf.download("EURUSD=X", start=start, auto_adjust=False, progress=False)
-if fx.empty:
-    st.error("Impossible de télécharger les données EUR/USD.")
-    st.stop()
-if isinstance(fx.columns, pd.MultiIndex):
-    fx.columns = fx.columns.get_level_values(0)
-if "Adj Close" in fx.columns:
-    fx_series = fx["Adj Close"]
-elif "Close" in fx.columns:
-    fx_series = fx["Close"]
-else:
-    fx_series = fx.iloc[:, 0]
-fx_series.index = pd.to_datetime(fx_series.index)
-fx_series = fx_series.sort_index().drop_duplicates()
+        "Actif": [ticker_names.get(t, t) for t in tickers],
+        "Ticker": tickers,
+        "Source": [report[t]["source"] for t in tickers],
+        "Statut": [icons[report[t]["status"]] for t in tickers],
+        "Poids cible": [f"{allocation[t] * 100:.1f}%" for t in tickers],
+        "Poids effectif": [f"{weights[t] * 100:.1f}%" if t in weights.index else "0.0%" for t in tickers],
+        "Détail": [report[t]["note"] for t in tickers],
+    })
+    st.dataframe(df_weights, use_container_width=True, hide_index=True)
+    st.caption(f"Total investi : {weights.sum() * 100:.1f}% "
+               f"(cible {total_target * 100:.1f}%, le solde est conservé en liquidités).")
 
 # =====================
 # NAV portefeuille
 # =====================
+# FX aligné sur le calendrier des cours par propagation du dernier taux connu
+# (les jours fériés US / EU diffèrent : une jointure "inner" supprimait des dates).
+fx_aligned = None
+if fx_series is not None:
+    fx_aligned = (fx_series.reindex(prices.index.union(fx_series.index))
+                  .ffill().reindex(prices.index).ffill().bfill())
+
+usd_ok = [t for t in USD_TICKERS if t in prices.columns]
 prices_eur = prices.copy()
-usd_tickers = ["GOOGL", "META", "HWM", "AMZN"]
-for t in usd_tickers:
-    if t in prices.columns and t not in failed_tickers:
-        prices_t = prices[t].copy()
-        prices_t.index = pd.to_datetime(prices_t.index)
-        prices_t = prices_t.sort_index().drop_duplicates()
-        combined = pd.concat([prices_t, fx_series], axis=1, join='inner').ffill()
-        if len(combined.columns) == 2:
-            combined.columns = ['price', 'fx']
-            prices_eur[t] = combined['price'] * (1 / combined['fx'])
+for t in usd_ok:
+    prices_eur[t] = prices[t] / fx_aligned
 prices_eur = prices_eur.ffill()
-returns = prices_eur.pct_change().fillna(0)
+
+returns = pct(prices_eur).fillna(0)[weights.index]
 portfolio_returns = (returns * weights).sum(axis=1)
 portfolio_index = (1 + portfolio_returns).cumprod()
 
 hedged_returns = returns.copy()
-for t in usd_tickers:
-    if t in prices.columns and t not in failed_tickers:
-        asset_ret_usd = prices[t].pct_change().fillna(0)
-        fx_ret = fx_series.pct_change().fillna(0)
-        combined_ret = pd.DataFrame({'asset': asset_ret_usd, 'fx': fx_ret}).ffill().fillna(0)
-        hedged_returns[t] = combined_ret['asset'] - combined_ret['fx']
+if usd_ok:
+    fx_ret = pct(fx_aligned).fillna(0)
+    for t in usd_ok:
+        asset_ret_usd = pct(prices[t]).fillna(0)
+        hedged_returns[t] = asset_ret_usd - fx_ret
 portfolio_returns_hedged = (hedged_returns * weights).sum(axis=1)
 portfolio_index_hedged = (1 + portfolio_returns_hedged).cumprod()
 
 # =====================
 # Benchmark
 # =====================
-@st.cache_data(ttl=3600)
-def load_benchmark_composite(start):
-    benchmark_weights = BENCHMARK_WEIGHTS
-    prices = pd.DataFrame()
-    for ticker in benchmark_weights.keys():
-        tmp = yf.download(ticker, start=start, auto_adjust=False, progress=False)
-        if not tmp.empty:
-            if isinstance(tmp.columns, pd.MultiIndex):
-                tmp.columns = tmp.columns.get_level_values(0)
-            if "Adj Close" in tmp.columns:
-                prices[ticker] = tmp["Adj Close"]
-            elif "Close" in tmp.columns:
-                prices[ticker] = tmp["Close"]
-            prices[ticker].index = pd.to_datetime(prices[ticker].index)
-    if prices.empty:
-        st.error("Aucune donnée de benchmark n'a pu être téléchargée.")
-        st.stop()
-    prices = prices.ffill()
-    weights = pd.Series(benchmark_weights)
-    returns = prices.pct_change().fillna(0)
-    bench_returns = (returns * weights).sum(axis=1)
-    return (1 + bench_returns).cumprod()
+def load_benchmark_composite(start_iso):
+    """Retourne (indice base 1, poids effectifs, tickers en échec)."""
+    series, failed = {}, []
+    for tk in BENCHMARK_WEIGHTS:
+        s, _ = download_single_ticker(tk, start_iso)
+        if s is None or len(s) < MIN_OBS:
+            failed.append(tk)
+        else:
+            series[tk] = s
+    if not series:
+        return None, {}, failed
+    px = pd.concat(series, axis=1).sort_index().ffill()
+    w = pd.Series({k: BENCHMARK_WEIGHTS[k] for k in px.columns})
+    w = w * (sum(BENCHMARK_WEIGHTS.values()) / w.sum())   # le poids total (cash inclus) est conservé
+    ret = pct(px).fillna(0)
+    return (1 + (ret * w).sum(axis=1)).cumprod(), w.to_dict(), failed
 
-bench_index = load_benchmark_composite(start)
-if bench_index.empty:
-    st.error("Impossible de calculer le benchmark.")
+
+bench_index, bench_weights_eff, bench_failed = load_benchmark_composite(start_iso)
+if bench_index is None:
+    st.error("Aucune donnée de benchmark n'a pu être téléchargée.")
     st.stop()
+if bench_failed:
+    st.warning("⚠️ Composantes du benchmark indisponibles et exclues : "
+               f"{', '.join(bench_failed)}. Les autres poids sont réajustés au prorata.")
+
+# ---- index temporels normalisés (sans fuseau) avant toute intersection
+portfolio_index = normalize_index(portfolio_index)
+portfolio_index_hedged = normalize_index(portfolio_index_hedged)
+bench_index = normalize_index(bench_index)
 
 common_index = portfolio_index.index.intersection(bench_index.index)
-portfolio_index = portfolio_index.loc[common_index]
-portfolio_index_hedged = portfolio_index_hedged.loc[common_index]
-bench_index = bench_index.loc[common_index]
+if len(common_index) < MIN_OBS:
+    st.error("Historique commun portefeuille / benchmark insuffisant "
+             f"({len(common_index)} dates). Reculez la date de début.")
+    st.stop()
+
+# rebasage à 1 sur la fenêtre commune
+portfolio_index = portfolio_index.loc[common_index] / portfolio_index.loc[common_index].iloc[0]
+portfolio_index_hedged = portfolio_index_hedged.loc[common_index] / portfolio_index_hedged.loc[common_index].iloc[0]
+bench_index = bench_index.loc[common_index] / bench_index.loc[common_index].iloc[0]
 
 # =====================
 # FONCTIONS DE CALCUL
@@ -276,18 +359,17 @@ def calculate_alpha(portfolio_return, benchmark_return, beta, risk_free_rate=0.0
 # =====================
 # CALCUL DES METRIQUES
 # =====================
-port_ret = portfolio_returns.dropna()
-port_ret_hedged = portfolio_returns_hedged.dropna()
-bench_ret = (bench_index.pct_change()).dropna()
+port_ret = pct(portfolio_index).dropna()
+port_ret_hedged = pct(portfolio_index_hedged).dropna()
+bench_ret = pct(bench_index).dropna()
 
+ytd_days = (datetime.now() - datetime(datetime.now().year, 1, 1)).days
 perf_1y_port = calculate_performance(portfolio_index, 365)
 perf_1y_bench = calculate_performance(bench_index, 365)
-perf_3y_port = calculate_performance(portfolio_index, 3*365)
-perf_3y_bench = calculate_performance(bench_index, 3*365)
-perf_ytd_port = calculate_performance(portfolio_index, 
-    (datetime.now() - datetime(datetime.now().year, 1, 1)).days)
-perf_ytd_bench = calculate_performance(bench_index, 
-    (datetime.now() - datetime(datetime.now().year, 1, 1)).days)
+perf_3y_port = calculate_performance(portfolio_index, 3 * 365)
+perf_3y_bench = calculate_performance(bench_index, 3 * 365)
+perf_ytd_port = calculate_performance(portfolio_index, ytd_days)
+perf_ytd_bench = calculate_performance(bench_index, ytd_days)
 
 vol_port = calculate_volatility(port_ret)
 vol_bench = calculate_volatility(bench_ret)
@@ -306,7 +388,7 @@ mdd_hedged = calculate_max_drawdown(portfolio_index_hedged)
 
 common_dates = port_ret.index.intersection(bench_ret.index)
 beta = calculate_beta(port_ret[common_dates].values, bench_ret[common_dates].values)
-alpha = calculate_alpha(perf_1y_port/100, perf_1y_bench/100, beta) * 100
+alpha = calculate_alpha(perf_1y_port / 100, perf_1y_bench / 100, beta) * 100
 
 calmar_port = calculate_calmar_ratio(portfolio_index, port_ret)
 calmar_bench = calculate_calmar_ratio(bench_index, bench_ret)
@@ -323,28 +405,11 @@ st.plotly_chart(fig, use_container_width=True)
 
 # Top 5
 st.subheader("🏆 Les 5 lignes les plus performantes sur le dernier mois")
-ticker_names = {
-    "TTE.PA": "TotalEnergies", "MC.PA": "LVMH", "INGA.AS": "ING Group",
-    "SAP.DE": "SAP", "ACLN.SW": "ACLN", "THEON.AS": "Theon Intl",
-    "BOI.PA": "Boiron", "EOAN.DE": "E.ON", "GOOGL": "Alphabet",
-    "META": "Meta", "HWM": "Howmet", "AMZN": "Amazon",
-    "0P0000ZWX4.F": "Helium Fund Perf A EUR",
-    "0P0001861S.F": "Eleva Abs Ret Eurp S EUR",
-    "0P00000M6C.F": "R-co Conviction Credit Euro",
-    "0P00008ESK.F": "AXAIMFIIS US SD HY EUR H",
-    "0P0000A6ZG.F": "Immobilier 21 AC",
-    "0P0000WHLW.F": "GemEquity R",
-}
 month_start = prices_eur.index[-1] - timedelta(days=30)
 prices_month = prices_eur[prices_eur.index >= month_start].ffill()
 if len(prices_month) >= 2:
-    monthly_perf = {}
-    for t in prices_month.columns:
-        if t in failed_tickers:
-            monthly_perf[t] = 0.0
-        else:
-            monthly_perf[t] = (prices_month[t].iloc[-1] / prices_month[t].iloc[0] - 1) * 100
-    monthly_perf = pd.Series(monthly_perf).sort_values(ascending=False)
+    monthly_perf = ((prices_month.iloc[-1] / prices_month.iloc[0] - 1) * 100).dropna()
+    monthly_perf = monthly_perf.sort_values(ascending=False)
     top5 = monthly_perf.head(5)
     col_bar, col_line = st.columns(2)
     top5_labels = [ticker_names.get(t, t) for t in top5.index]
@@ -368,17 +433,16 @@ if len(prices_month) >= 2:
     with col_line:
         fig_line = go.Figure()
         for ticker in top5.index:
-            if ticker in prices_month.columns:
-                series = prices_month[ticker]
-                if len(series) >= 2:
-                    normalized = (series / series.iloc[0]) * 100
-                    fig_line.add_trace(go.Scatter(
-                        x=normalized.index,
-                        y=normalized,
-                        name=ticker_names.get(ticker, ticker),
-                        mode='lines',
-                        line=dict(width=2)
-                    ))
+            series = prices_month[ticker].dropna()
+            if len(series) >= 2:
+                normalized = (series / series.iloc[0]) * 100
+                fig_line.add_trace(go.Scatter(
+                    x=normalized.index,
+                    y=normalized,
+                    name=ticker_names.get(ticker, ticker),
+                    mode='lines',
+                    line=dict(width=2)
+                ))
         fig_line.update_layout(
             title="Évolution normalisée sur le mois (base 100)",
             template="plotly_white",
@@ -407,17 +471,18 @@ with col3:
 
 st.subheader("📊 Statistiques globales")
 col1, col2, col3 = st.columns(3)
-col1.metric("Perf depuis le début", f"{(portfolio_index.iloc[-1]-1)*100:.2f}%")
+col1.metric("Perf depuis le début", f"{(portfolio_index.iloc[-1] - 1) * 100:.2f}%")
 col2.metric("Volatilité (annualisée)", f"{vol_port:.2f}%")
 col3.metric("Sharpe Ratio", f"{sharpe_port:.2f}")
 
 st.caption("Mise à jour automatique toutes les heures")
 
 # =====================
-# FACTSHEET PDF (1 clic, donnees temps reel)
+# FACTSHEET PDF (FR + EN, 1 clic, données temps réel)
 # =====================
 render_factsheet_section(
-    portfolio_index_hedged, bench_index, portfolio_returns_hedged,
-    allocation, ticker_names, weights, prices_eur,
-    bench_weights=BENCHMARK_WEIGHTS,
+    portfolio_index_hedged, bench_index, port_ret_hedged,
+    allocation_eff, ticker_names, weights, prices_eur,
+    bench_weights=bench_weights_eff,
+    excluded=excluded_names,
 )
