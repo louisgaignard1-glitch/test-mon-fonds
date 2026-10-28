@@ -1,5 +1,5 @@
 """
-factsheet_export.py - v7 (bilingue FR / EN)
+factsheet_export.py - v8 (bilingue FR / EN)
 -------------------------------------------
 Factsheet PDF 3 pages (style asset manager) generee a partir des donnees
 temps reel du portefeuille (prices_eur, indices, rendements) calculees par app.py.
@@ -13,6 +13,9 @@ Nouveautes v7
   - parametre excluded : liste des lignes exclues faute de donnees, mentionnee
     dans la factsheet
   - deux boutons de telechargement (FR / EN) dans render_factsheet_section()
+  - v8 : calendriers alignes par union + ffill (aucune date supprimee), parametre
+    rebal (frequence de rebalancement, frais de transaction) affiche dans la
+    factsheet ; RF est la source unique du taux sans risque (importee par app.py)
 
 Usage dans app.py :
     from factsheet_export import render_factsheet_section, normalize_index
@@ -20,7 +23,8 @@ Usage dans app.py :
                              portfolio_returns_hedged, allocation,
                              ticker_names, weights, prices_eur,
                              bench_weights=bench_weights_eff,
-                             excluded=["Nom de la ligne exclue", ...])
+                             excluded=["Nom de la ligne exclue", ...],
+                             rebal=dict(freq="M", bps=10.0))
 """
 
 import io
@@ -126,9 +130,9 @@ TX = {
     "as_of": ("Au {d}", "As of {d}"),
     "hdr_page": ("Factsheet mensuelle - Page {p} / 3", "Monthly factsheet - Page {p} / 3"),
     "ftr1": ("Données : Yahoo Finance (cours ajustés), calculs en EUR. Couverture de change simulée sans coût. "
-             "Performances avant frais de gestion.",
+             "Frais de transaction simulés (cf. informations), hors frais de gestion.",
              "Data: Yahoo Finance (adjusted prices), calculations in EUR. FX hedge simulated at no cost. "
-             "Performance shown before management fees."),
+             "Simulated transaction costs (see fund information), excluding management fees."),
     "ftr2": ("Généré le {d}. Ceci n'est pas un conseil en investissement.",
              "Generated on {d}. This is not investment advice."),
     "no_data": ("Données insuffisantes", "Insufficient data"),
@@ -155,6 +159,12 @@ TX = {
     "i_hor_v": ("5 ans", "5 years"),
     "i_hedge": ("Couverture USD", "USD hedge"),
     "i_hedge_v": ("Simulée (forward)", "Simulated (forward)"),
+    "i_rebal": ("Rebalancement", "Rebalancing"),
+    "freq_D": ("Quotidien (théorique)", "Daily (theoretical)"),
+    "freq_M": ("Mensuel", "Monthly"),
+    "freq_Q": ("Trimestriel", "Quarterly"),
+    "i_fees": ("Frais de transaction", "Transaction costs"),
+    "i_fees_v": ("{b} bps / mouvement", "{b} bps per trade"),
     "i_nl": ("Nombre de lignes", "Number of holdings"),
     "i_nav": ("VL (base 100)", "NAV (base 100)"),
     # SRI
@@ -289,17 +299,23 @@ TX = {
         "a limited number of positions."),
     "legal": (
         "Méthodologie : performances calculées à partir des cours ajustés (dividendes réinvestis) convertis en "
-        "EUR, avec des poids constants (rebalancement quotidien implicite). Benchmark composé d'ETF cotés en USD "
+        "EUR, {rebal}. Benchmark composé d'ETF cotés en USD "
         "(IEV, SPY, TLT, VNQ, EEM), non convertis en EUR. Sharpe et alpha calculés avec un taux sans risque de "
         "{rf}. Ce document est communiqué à titre informatif, ne constitue ni un conseil en investissement ni "
         "une offre d'achat ou de vente. Les performances passées ne sont pas un indicateur fiable des "
         "performances futures. Tout investissement comporte un risque de perte en capital.",
         "Methodology: performance is computed from adjusted prices (dividends reinvested) converted to EUR, "
-        "using constant weights (implicit daily rebalancing). The benchmark is made of USD-listed ETFs (IEV, SPY, "
+        "{rebal}. The benchmark is made of USD-listed ETFs (IEV, SPY, "
         "TLT, VNQ, EEM) and is not converted to EUR. Sharpe ratio and alpha use a risk-free rate of {rf}. This "
         "document is provided for information only and is neither investment advice nor an offer to buy or "
         "sell. Past performance is not a reliable indicator of future results. All investments carry a risk of "
         "capital loss."),
+    "legal_rebal": ("avec rebalancement {freq} vers les poids cibles (dérive des poids entre deux dates) "
+                    "et frais de transaction de {bps} bps par montant échangé",
+                    "with {freq} rebalancing to target weights (weight drift between dates) "
+                    "and transaction costs of {bps} bps on traded amounts"),
+    "legal_rebal_none": ("avec des poids constants (rebalancement quotidien implicite)",
+                         "using constant weights (implicit daily rebalancing)"),
     "excl_note": (
         "Lignes exclues faute de données exploitables : {names}. Leur poids a été réparti au prorata sur les "
         "autres lignes.",
@@ -564,11 +580,19 @@ STAT_WINDOWS = [("1Y", 365), ("3Y", 3 * 365), ("5Y", 5 * 365), ("ITD", None)]
 
 
 def build_context(port_idx, bench_idx, prices_eur, allocation, ticker_names,
-                  weights, bench_weights, port_ret=None, excluded=None):
+                  weights, bench_weights, port_ret=None, excluded=None, rebal=None):
     # --- normalisation des index (tz, doublons, ordre) AVANT toute intersection
-    port_idx = normalize_index(port_idx).dropna()
-    bench_idx = normalize_index(bench_idx).dropna()
+    port_idx = normalize_index(port_idx)
+    bench_idx = normalize_index(bench_idx)
     prices_eur = normalize_index(prices_eur) if prices_eur is not None else None
+
+    # Calendrier unique : union des dates puis ffill PAR SERIE, avant toute intersection.
+    # Les jours fériés propres à un marché (US / UE) ne suppriment donc aucune date.
+    calendar = port_idx.index.union(bench_idx.index)
+    port_idx = port_idx.reindex(calendar).ffill().dropna()
+    bench_idx = bench_idx.reindex(calendar).ffill().dropna()
+    if prices_eur is not None:
+        prices_eur = prices_eur.reindex(prices_eur.index.union(calendar)).ffill()
 
     common = port_idx.index.intersection(bench_idx.index)
     if len(common) < 3:
@@ -583,7 +607,7 @@ def build_context(port_idx, bench_idx, prices_eur, allocation, ticker_names,
     D = dict(port=port_idx, bench=bench_idx, rp=rp, rb=rb, first=first, last=last,
              days_total=days_total, prices=prices_eur, allocation=allocation,
              names=ticker_names, weights=weights, bench_weights=bench_weights or {},
-             excluded=list(excluded or []))
+             excluded=list(excluded or []), rebal=rebal)
     D["as_of"] = _date(last)
     D["today"] = _date(pd.Timestamp(datetime.datetime.now()), with_time=True)
     D["inception"] = _date(first)
@@ -1009,10 +1033,12 @@ def _page1(c, D):
         [T("i_val"), T("i_val_v")],
         [T("i_hor"), T("i_hor_v")],
         [T("i_hedge"), T("i_hedge_v")],
+        [T("i_rebal"), T("freq_" + D["rebal"]["freq"]) if D["rebal"] else T("freq_D")],
+        [T("i_fees"), T("i_fees_v", b=f"{D['rebal']['bps']:g}") if D["rebal"] else "n/a"],
         [T("i_nl"), str(D["n_lines"])],
         [T("i_nav"), fraw(D["port"].iloc[-1] / D["port"].iloc[0] * 100)],
     ]
-    yl = _trows(c, ML, yl, info, [26 * mm, LW - 26 * mm], rh=4.4 * mm, signed=False)
+    yl = _trows(c, ML, yl, info, [24 * mm, LW - 24 * mm], rh=4.4 * mm, signed=False)
     yl -= GAP
 
     yl = _sec(c, ML, yl, T("sec_sri"), LW)
@@ -1273,7 +1299,13 @@ def _page3(c, D):
     y = _sec(c, ML, y, T("sec_risk"))
     y = _para(c, ML, y, T("risks"), CW, 5.8, 7.2)
     y -= 1.5 * mm
-    y = _para(c, ML, y, T("legal", rf=fpl(RF * 100, 1)), CW, 5.4, 6.8, P_MUTED, "Helvetica-Oblique")
+    if D["rebal"]:
+        rebal_txt = T("legal_rebal", freq=T("freq_" + D["rebal"]["freq"]).lower(),
+                      bps=f"{D['rebal']['bps']:g}")
+    else:
+        rebal_txt = T("legal_rebal_none")
+    y = _para(c, ML, y, T("legal", rf=fpl(RF * 100, 1), rebal=rebal_txt), CW, 5.4, 6.8,
+              P_MUTED, "Helvetica-Oblique")
     if D["excluded"]:
         y -= 1.2 * mm
         _para(c, ML, y, T("excl_note", names=", ".join(D["excluded"])), CW, 5.4, 6.8,
@@ -1285,14 +1317,14 @@ def _page3(c, D):
 # ═════════════════════════════════════════════════════════
 def generate_factsheet_pdf(port_idx, bench_idx, port_ret, allocation, ticker_names,
                            weights, prices_eur=None, bench_weights=None,
-                           lang="fr", excluded=None) -> bytes:
+                           lang="fr", excluded=None, rebal=None) -> bytes:
     """Genere la factsheet. lang : "fr" (defaut) ou "en"."""
     lang = "en" if str(lang).lower().startswith("en") else "fr"
     previous = getattr(_L, "lang", None)
     _L.lang = lang
     try:
         D = build_context(port_idx, bench_idx, prices_eur, allocation, ticker_names,
-                          weights, bench_weights, port_ret, excluded)
+                          weights, bench_weights, port_ret, excluded, rebal)
         buf = io.BytesIO()
         c = rl_canvas.Canvas(buf, pagesize=A4)
         c.setTitle(f"Factsheet - {D['as_of']}")
@@ -1315,16 +1347,19 @@ def _build_cached(cache_key: str, lang: str, _payload: dict) -> bytes:
 
 
 def render_factsheet_section(port_idx, bench_idx, port_ret, allocation, ticker_names,
-                             weights, prices_eur=None, bench_weights=None, excluded=None):
+                             weights, prices_eur=None, bench_weights=None, excluded=None,
+                             rebal=None):
     """Deux boutons de telechargement (FR / EN). PDF generes en 1 clic, mis en cache 15 min."""
     st.divider()
     st.subheader(f"{TX['ui_title'][0]} / {TX['ui_title'][1]}")
     payload = dict(port_idx=port_idx, bench_idx=bench_idx, port_ret=port_ret,
                    allocation=allocation, ticker_names=ticker_names, weights=weights,
-                   prices_eur=prices_eur, bench_weights=bench_weights, excluded=excluded)
+                   prices_eur=prices_eur, bench_weights=bench_weights, excluded=excluded,
+                   rebal=rebal)
     w_sig = ",".join(f"{t}:{float(w):.6f}" for t, w in weights.items())
     base_key = (f"{port_idx.index[-1]:%Y%m%d}-{float(port_idx.iloc[-1]):.6f}-{len(port_idx)}-"
-                f"{hash(w_sig)}-{'|'.join(excluded or [])}")
+                f"{hash(w_sig)}-{'|'.join(excluded or [])}-"
+                f"{sorted((rebal or {}).items())}")
     today = datetime.date.today()
     col_fr, col_en = st.columns(2)
     for col, lang, label, bkey in (
