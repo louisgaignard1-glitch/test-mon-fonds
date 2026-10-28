@@ -5,4 +5,5 @@ numpy
 plotly
 matplotlib
 reportlab
+duckdb
 # openbb  ← décommenter si déployé en local ou serveur dédié (trop lourd pour Streamlit Cloud gratuit)
