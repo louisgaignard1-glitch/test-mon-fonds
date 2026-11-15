@@ -10,7 +10,8 @@ import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
 
-from factsheet_export import RF, normalize_index, render_factsheet_section
+from factsheet_export import (OVERLAY_PROXIES, RF, line_meta, normalize_index,
+                              render_factsheet_section)
 
 st.set_page_config(page_title="Portfolio vs Benchmark", layout="wide")
 st.title("📊 Portfolio vs Benchmark composite")
@@ -61,6 +62,17 @@ USD_TICKERS = ["GOOGL", "META", "HWM", "AMZN"]
 FALLBACK_TICKERS = {
     "TTE.PA": ["FP.PA"],
 }
+
+# Cotations de secours des proxys d'overlay (définies dans factsheet_export.OVERLAY_PROXIES)
+for _t, _m in OVERLAY_PROXIES.items():
+    if _m["fallbacks"]:
+        FALLBACK_TICKERS.setdefault(_t, list(_m["fallbacks"]))
+TICKER_NAMES_ALL = {**ticker_names, **{t: m["name"] for t, m in OVERLAY_PROXIES.items()}}
+
+# Overlay tactique : valeurs neutres des curseurs (points de % d'actif net ; couverture en %)
+OV_DEFAULTS = dict(ov_eu=0.0, ov_us=0.0, ov_bond=0.0, ov_re=0.0, ov_split=50, ov_hedge=100,
+                   ov_fund="prorata")
+FUNDING_OPTIONS = {"Au prorata des lignes non touchées": "prorata", "Via les liquidités": "cash"}
 
 MIN_OBS = 30          # nombre minimal de cours pour qu'une ligne soit utilisable
 STALE_DAYS = 10       # au-delà, un cours est jugé figé
@@ -136,6 +148,113 @@ def simulate_portfolio(returns, target_w, freq="M", cost_bps=0.0):
         turnover_ann=float(np.sum(traded_pct) / years) if traded_pct else 0.0,
         cost_total=float(cost_total),
     )
+
+
+# =====================
+# Overlay tactique (TAA) : poids tactiques, rendements couverts, expositions
+# =====================
+def proxy_shares(eu_ticker, us_ticker, us_share):
+    """Répartition d'une poche de proxys entre Europe et US ; repli sur le proxy disponible."""
+    if eu_ticker and us_ticker:
+        out = {eu_ticker: 1.0 - us_share, us_ticker: us_share}
+        return {t: v for t, v in out.items() if v > 1e-12}
+    if eu_ticker:
+        return {eu_ticker: 1.0}
+    if us_ticker:
+        return {us_ticker: 1.0}
+    return {}
+
+
+def build_tactical_weights(base_w, tilts, groups, proxy_alloc, funding="prorata"):
+    """
+    Applique les écarts tactiques aux poids de base (sans levier, sans poids négatif).
+
+    - base_w      : Series des poids de base (hors liquidités)
+    - tilts       : dict eq_eu, eq_us, bond, re en fraction de l'actif net (0.05 = +5 pts)
+    - groups      : dict eq_eu / eq_us / re -> lignes existantes de chaque poche
+    - proxy_alloc : dict bond / re -> {ticker proxy: part} (parts sommant à 1 ; {} si indisponible)
+    - funding     : "prorata" (financé / alimenté par les lignes non touchées) ou "cash"
+
+    Surpondération actions : lignes existantes de la zone, au prorata de leur poids.
+    Sous-pondération : plafonnée au poids actuel de la poche. Obligations d'État : proxys seulement
+    (écart >= 0). Immobilier : écart < 0 réduit le fonds existant, écart > 0 achète les proxys.
+    Si le financement est insuffisant, les achats sont réduits (pas de levier).
+    Retourne dict(weights, cash, eff, scaled) ; eff = écarts effectivement appliqués par poche.
+    """
+    proxies = sorted({t for a in proxy_alloc.values() for t in a})
+    idx = list(base_w.index) + [t for t in proxies if t not in base_w.index]
+    w = base_w.reindex(idx).fillna(0.0).astype(float)
+    d = pd.Series(0.0, index=idx)
+    sleeve_lines = {k: [] for k in ("eq_eu", "eq_us", "bond", "re")}
+
+    for k in ("eq_eu", "eq_us", "re"):
+        x, lines = float(tilts.get(k, 0.0)), [t for t in groups.get(k, []) if t in w.index]
+        sleeve_lines[k] += lines
+        if x < 0 or k != "re":
+            tot = float(w[lines].sum()) if lines else 0.0
+            if tot > 0 and x != 0:
+                x = max(x, -tot)
+                d[lines] += w[lines] / tot * x
+    for k in ("bond", "re"):
+        x = float(tilts.get(k, 0.0))
+        if x > 0:
+            for t, sh in proxy_alloc.get(k, {}).items():
+                d[t] += x * sh
+                sleeve_lines[k].append(t)
+
+    touched = {t for k, v in sleeve_lines.items() if float(tilts.get(k, 0.0)) != 0 for t in v}
+    free = [t for t in base_w.index if d[t] == 0 and w[t] > 0 and t not in touched]  # lignes non touchées
+    pos, neg = float(d[d > 0].sum()), float(d[d < 0].sum())
+    capacity = float(w[free].sum()) if funding == "prorata" else max(0.0, 1.0 - float(w.sum()))
+    k_scale = 1.0
+    if pos > 0 and pos + neg > capacity + 1e-12:
+        k_scale = max(0.0, (capacity - neg) / pos)
+        d[d > 0] *= k_scale
+    net = float(d.sum())
+    w_new = w + d
+    if funding == "prorata" and free:
+        sf = float(w[free].sum())
+        if sf > 0:
+            w_new[free] = w[free] * (1.0 - net / sf)
+    w_new = w_new.clip(lower=0.0)
+    eff = {k: float(d[sorted(set(v))].sum()) if v else 0.0 for k, v in sleeve_lines.items()}
+    return dict(weights=w_new, cash=float(max(0.0, 1.0 - w_new.sum())), eff=eff,
+                scaled=bool(k_scale < 1.0 - 1e-9))
+
+
+def strategy_returns(ret_eur, fx_ret, usd_cols, hedge):
+    """
+    Rendements EUR après couverture de change du ratio `hedge` (0 à 1) sur les colonnes USD.
+    fx_ret : rendement de EUR/USD (USD pour 1 EUR). Couverture quotidienne, report/déport non modélisé :
+    r_couvert = r_EUR + h * fx_ret / (1 + fx_ret)  (h = 1 : rendement en USD converti au cours du jour).
+    """
+    r = ret_eur.copy()
+    cols = [c for c in usd_cols if c in r.columns]
+    if hedge > 0 and cols and fx_ret is not None:
+        adj = (hedge * fx_ret / (1.0 + fx_ret)).reindex(r.index).fillna(0.0)
+        r[cols] = r[cols].add(adj, axis=0)
+    return r
+
+
+def exposure_table(w, cash, meta_fn, hedge=0.0):
+    """Expositions (en % de l'actif net) par poche, plus USD brut et USD net de couverture."""
+    out = dict.fromkeys(("Actions Europe", "Actions Amérique du Nord", "Actions autres zones",
+                         "Obligations & crédit", "Immobilier", "Alternatif", "Liquidités",
+                         "Exposition USD brute", "Exposition USD nette"), 0.0)
+    for t, x in w.items():
+        m = meta_fn(t)
+        if m["cls"] == "Actions":
+            key = {"Europe": "Actions Europe",
+                   "Amerique du Nord": "Actions Amérique du Nord"}.get(m["region"], "Actions autres zones")
+        else:
+            key = {"Credit & Obligations": "Obligations & crédit", "Immobilier": "Immobilier",
+                   "Alternatif": "Alternatif"}.get(m["cls"], "Alternatif")
+        out[key] += x * 100
+        if m["ccy"] == "USD":
+            out["Exposition USD brute"] += x * 100
+    out["Liquidités"] = cash * 100
+    out["Exposition USD nette"] = out["Exposition USD brute"] * (1.0 - hedge)
+    return out
 
 
 # =====================
@@ -306,6 +425,35 @@ cost_bps = st.sidebar.number_input(
     help="Appliqués au montant acheté ou vendu sur chaque ligne lors d'un rebalancement. "
          "Le premier investissement n'est pas facturé.")
 force_refresh = st.sidebar.button("🔄 Forcer le rafraîchissement des cours")
+
+
+for _k, _v in OV_DEFAULTS.items():
+    st.session_state.setdefault(_k, _v)
+
+
+def _reset_overlay():
+    for k, v in OV_DEFAULTS.items():
+        st.session_state[k] = v
+
+
+with st.sidebar.expander("🎯 Overlay tactique (TAA)", expanded=False):
+    st.caption("Écarts par rapport au portefeuille de base, en points d'actif net. "
+               "Tout est recalculé instantanément, factsheet comprise.")
+    ov_eu = st.slider("Actions Europe (pts)", -20.0, 20.0, step=0.5, key="ov_eu",
+                      help="Sur / sous-pondération des actions directes européennes de la poche.")
+    ov_us = st.slider("Actions US (pts)", -20.0, 20.0, step=0.5, key="ov_us",
+                      help="Sur / sous-pondération des actions directes d'Amérique du Nord.")
+    ov_bond = st.slider("Obligations d'État (pts)", 0.0, 30.0, step=0.5, key="ov_bond",
+                        help="Achat de proxys liquides : ETF Euro Govt (EUNH) et US Treasury 20+ ans (TLT).")
+    ov_re = st.slider("Immobilier (pts)", -10.0, 20.0, step=0.5, key="ov_re",
+                      help="Négatif : réduit le fonds immobilier existant. Positif : ETF IPRP / VNQ.")
+    ov_split = st.slider("Part US des proxys (%)", 0, 100, step=5, key="ov_split",
+                         help="Répartition Europe / US des achats obligataires et immobiliers.")
+    ov_hedge = st.slider("Ratio de couverture USD/EUR (%)", 0, 100, step=5, key="ov_hedge",
+                         help="Appliqué à toutes les lignes en USD (actions US, TLT, VNQ).")
+    ov_fund_label = st.radio("Financement des écarts", list(FUNDING_OPTIONS), key="ov_fund_label")
+    ov_fund = FUNDING_OPTIONS[ov_fund_label]
+    st.button("↺ Revenir au portefeuille de base", on_click=_reset_overlay)
 
 store = get_store(PRICE_DB_PATH)
 tickers = list(allocation.keys())
@@ -498,7 +646,7 @@ if not excluded and not issues and not bench_failed:
     st.success("Tous les actifs ont été chargés avec succès !")
 
 # =====================
-# NAV portefeuille (rebalancement, dérive, frais)
+# Overlay tactique + NAV portefeuille (rebalancement, dérive, frais)
 # =====================
 usd_ok = [t for t in USD_TICKERS if t in prices.columns]
 prices_eur = prices.copy()
@@ -506,22 +654,60 @@ for t in usd_ok:
     prices_eur[t] = prices[t] / fx_aligned
 prices_eur = prices_eur.ffill()
 
-returns = pct(prices_eur).fillna(0)[weights.index]
+tilts_req = dict(eq_eu=ov_eu / 100, eq_us=ov_us / 100, bond=ov_bond / 100, re=ov_re / 100)
 
-hedged_returns = returns.copy()
-if usd_ok:
-    fx_ret = pct(fx_aligned).fillna(0)
-    for t in usd_ok:
-        hedged_returns[t] = pct(prices[t]).fillna(0) - fx_ret
+# proxys chargés uniquement si la poche correspondante est surpondérée (cache DuckDB)
+proxy_px, proxy_notes = {}, []
+for t, m in OVERLAY_PROXIES.items():
+    if tilts_req[m["sleeve"]] <= 0:
+        continue
+    if m["ccy"] == "USD" and fx_series is None:
+        proxy_notes.append(f"{m['name']} : taux EUR/USD indisponible")
+        continue
+    s_t, _ = get_series(t)
+    if s_t is None or len(s_t) < MIN_OBS:
+        proxy_notes.append(f"{m['name']} ({t}) : aucune donnée exploitable")
+    else:
+        proxy_px[t] = s_t
 
-sim = simulate_portfolio(returns, weights, rebal_code, cost_bps)
-sim_h = simulate_portfolio(hedged_returns, weights, rebal_code, cost_bps)
-sim_h_gross = simulate_portfolio(hedged_returns, weights, rebal_code, 0.0)
+proxies_eur = pd.DataFrame(index=prices.index)
+for t, s_t in proxy_px.items():
+    px_t = s_t.reindex(prices.index.union(s_t.index)).ffill().reindex(prices.index)
+    proxies_eur[t] = px_t / fx_aligned if OVERLAY_PROXIES[t]["ccy"] == "USD" else px_t
+prices_eur_all = pd.concat([prices_eur, proxies_eur], axis=1)
 
-portfolio_index = normalize_index(sim["nav"])
-portfolio_index_hedged = normalize_index(sim_h["nav"])
-weights_now = sim_h["weights_end"]                          # poids dérivés à la dernière date
-cost_drag = (sim_h["nav"].iloc[-1] / sim_h_gross["nav"].iloc[-1] - 1) * 100
+
+def _proxy_alloc(sleeve):
+    av = {m["region"]: t for t, m in OVERLAY_PROXIES.items() if m["sleeve"] == sleeve and t in proxy_px}
+    return proxy_shares(av.get("Europe"), av.get("Amerique du Nord"), ov_split / 100)
+
+
+proxy_alloc = {k: _proxy_alloc(k) for k in ("bond", "re")}
+meta_base = {t: line_meta(t) for t in weights.index}
+groups = dict(
+    eq_eu=[t for t, m in meta_base.items() if m["kind"] == "Direct" and m["region"] == "Europe"],
+    eq_us=[t for t, m in meta_base.items() if m["kind"] == "Direct" and m["region"] == "Amerique du Nord"],
+    re=[t for t, m in meta_base.items() if m["cls"] == "Immobilier" and m["kind"] == "Fonds"],
+)
+tact = build_tactical_weights(weights, tilts_req, groups, proxy_alloc, ov_fund)
+w_strat = tact["weights"]
+w_strat = w_strat[(w_strat > 1e-12) | w_strat.index.isin(weights.index)]
+overlay_active = any(abs(v) > 1e-9 for v in tact["eff"].values())
+
+ret_eur = pct(prices_eur_all).fillna(0)
+fx_ret = pct(fx_aligned).fillna(0) if fx_series is not None else None
+usd_cols = [t for t in ret_eur.columns
+            if t in usd_ok or OVERLAY_PROXIES.get(t, {}).get("ccy") == "USD"]
+ret_strat = strategy_returns(ret_eur, fx_ret, usd_cols, ov_hedge / 100)
+
+sim_s = simulate_portfolio(ret_strat[w_strat.index], w_strat, rebal_code, cost_bps)
+sim_s_gross = simulate_portfolio(ret_strat[w_strat.index], w_strat, rebal_code, 0.0)
+sim_b = simulate_portfolio(ret_eur[weights.index], weights, rebal_code, cost_bps)
+
+portfolio_index = normalize_index(sim_s["nav"])              # stratégie tactique (overlay + couverture)
+portfolio_index_base = normalize_index(sim_b["nav"])         # portefeuille de base, non couvert
+weights_now = sim_s["weights_end"]                           # poids dérivés à la dernière date
+cost_drag = (sim_s["nav"].iloc[-1] / sim_s_gross["nav"].iloc[-1] - 1) * 100
 
 with st.expander("🔍 Qualité des données et poids du portefeuille"):
     icons = {"ok": "✅ Disponible", "partial": "⚠️ Historique partiel",
@@ -536,6 +722,7 @@ with st.expander("🔍 Qualité des données et poids du portefeuille"):
         "Statut": [icons[report[t]["status"]] for t in tickers],
         "Poids cible": [f"{allocation[t] * 100:.1f}%" for t in tickers],
         "Poids rebalancé": [f"{weights[t] * 100:.1f}%" if t in weights.index else "0.0%" for t in tickers],
+        "Poids tactique": [f"{w_strat[t] * 100:.1f}%" if t in w_strat.index else "0.0%" for t in tickers],
         "Poids actuel (dérive)": [f"{weights_now[t] * 100:.1f}%" if t in weights_now.index else "0.0%"
                                   for t in tickers],
         "Détail": [report[t]["note"] for t in tickers],
@@ -565,7 +752,7 @@ def calculate_performance(index_series, days):
     return (end_value / start_value - 1) * 100
 
 def calculate_volatility(returns_series, periods=252):
-    return returns_series.std() * np.sqrt(periods)
+    return returns_series.std() * np.sqrt(periods) * 100      # en %
 
 def calculate_sharpe_ratio(returns_series, risk_free_rate=RF, periods=252):
     excess_returns = returns_series - (risk_free_rate / periods)
@@ -603,7 +790,7 @@ def calculate_alpha(portfolio_return, benchmark_return, beta, risk_free_rate=RF)
 # CALCUL DES METRIQUES
 # =====================
 port_ret = pct(portfolio_index).dropna()
-port_ret_hedged = pct(portfolio_index_hedged).dropna()
+port_ret_base = pct(portfolio_index_base).dropna()
 bench_ret = pct(bench_index).dropna()
 
 ytd_days = (datetime.now() - datetime(datetime.now().year, 1, 1)).days
@@ -616,18 +803,12 @@ perf_ytd_bench = calculate_performance(bench_index, ytd_days)
 
 vol_port = calculate_volatility(port_ret)
 vol_bench = calculate_volatility(bench_ret)
-vol_port_hedged = calculate_volatility(port_ret_hedged)
-
 sharpe_port = calculate_sharpe_ratio(port_ret)
 sharpe_bench = calculate_sharpe_ratio(bench_ret)
-sharpe_hedged = calculate_sharpe_ratio(port_ret_hedged)
-
 sortino_port = calculate_sortino_ratio(port_ret)
 sortino_bench = calculate_sortino_ratio(bench_ret)
-
 mdd_port = calculate_max_drawdown(portfolio_index)
 mdd_bench = calculate_max_drawdown(bench_index)
-mdd_hedged = calculate_max_drawdown(portfolio_index_hedged)
 
 common_dates = port_ret.index.intersection(bench_ret.index)
 beta = calculate_beta(port_ret[common_dates].values, bench_ret[common_dates].values)
@@ -636,16 +817,33 @@ alpha = calculate_alpha(perf_1y_port / 100, perf_1y_bench / 100, beta) * 100
 calmar_port = calculate_calmar_ratio(portfolio_index, port_ret)
 calmar_bench = calculate_calmar_ratio(bench_index, bench_ret)
 
+
+def metrics_row(idx, ret):
+    return {
+        "Perf depuis le début (%)": (idx.iloc[-1] / idx.iloc[0] - 1) * 100,
+        "Perf 1 an (%)": calculate_performance(idx, 365),
+        "Volatilité (%)": calculate_volatility(ret),
+        "Sharpe": calculate_sharpe_ratio(ret),
+        "Max Drawdown (%)": calculate_max_drawdown(idx),
+        "Sortino": calculate_sortino_ratio(ret),
+        "Calmar": calculate_calmar_ratio(idx, ret),
+    }
+
+
 # =====================
 # Affichage des graphiques
 # =====================
 fig = go.Figure()
-fig.add_trace(go.Scatter(x=portfolio_index.index, y=portfolio_index, name="Portfolio", line=dict(width=3, color='#1f3a93')))
+fig.add_trace(go.Scatter(x=portfolio_index.index, y=portfolio_index,
+                         name="Portefeuille tactique" if overlay_active or ov_hedge else "Portefeuille",
+                         line=dict(width=3, color='#1f3a93')))
 fig.add_trace(go.Scatter(x=bench_index.index, y=bench_index, name="Benchmark composite", line=dict(width=3, color='#d32f2f')))
-fig.add_trace(go.Scatter(x=portfolio_index_hedged.index, y=portfolio_index_hedged, name="Portfolio hedgé USD", line=dict(width=3, dash="dot", color="#2ecc71")))
+fig.add_trace(go.Scatter(x=portfolio_index_base.index, y=portfolio_index_base,
+                         name="Portefeuille de base (sans overlay, non couvert)",
+                         line=dict(width=2, dash="dot", color="#2ecc71")))
 fig.update_layout(height=600, template="plotly_white", hovermode='x unified',
                   title=f"Performance cumulée (rebalancement : {rebal_label.lower()}, "
-                        f"frais : {cost_bps:g} bps)")
+                        f"frais : {cost_bps:g} bps, couverture USD : {ov_hedge}%)")
 st.plotly_chart(fig, use_container_width=True)
 
 # Top 5
@@ -699,15 +897,15 @@ if len(prices_month) >= 2:
 st.subheader("📈 Performances")
 col1, col2, col3 = st.columns(3)
 with col1:
-    st.markdown("**Portefeuille**")
+    st.markdown("**Portefeuille (stratégie)**")
     st.metric("Perf YTD", f"{perf_ytd_port:.2f}%")
     st.metric("Perf 1 an", f"{perf_1y_port:.2f}%")
     st.metric("Perf 3 ans", f"{perf_3y_port:.2f}%")
 with col2:
-    st.markdown("**Portefeuille Hedgé USD**")
-    st.metric("Volatilité", f"{vol_port_hedged:.2f}%")
-    st.metric("Sharpe", f"{sharpe_hedged:.2f}")
-    st.metric("Max Drawdown", f"{mdd_hedged:.2f}%")
+    st.markdown("**Risque (stratégie)**")
+    st.metric("Volatilité", f"{vol_port:.2f}%")
+    st.metric("Sharpe", f"{sharpe_port:.2f}")
+    st.metric("Max Drawdown", f"{mdd_port:.2f}%")
 with col3:
     st.markdown("**Benchmark**")
     st.metric("Perf YTD", f"{perf_ytd_bench:.2f}%")
@@ -721,11 +919,50 @@ col2.metric("Volatilité (annualisée)", f"{vol_port:.2f}%")
 col3.metric("Sharpe Ratio", f"{sharpe_port:.2f}")
 st.caption(f"Taux sans risque : {RF * 100:.1f}% (identique dans l'application et dans la factsheet).")
 
-st.subheader("⚙️ Rebalancement et frais (portefeuille hedgé USD)")
+st.subheader("🎯 Overlay tactique")
+labels = dict(eq_eu="Actions Europe", eq_us="Actions US", bond="Obligations d'État", re="Immobilier")
+if overlay_active:
+    st.caption("Écarts effectifs : " + " | ".join(
+        f"{labels[k]} {tact['eff'][k] * 100:+.1f} pt" for k in labels) +
+        f" | Couverture USD {ov_hedge}%")
+else:
+    st.caption(f"Aucun écart tactique actif (couverture USD : {ov_hedge}%).")
+if tact["scaled"]:
+    st.warning("⚠️ Financement insuffisant : les surpondérations ont été réduites (pas de levier). "
+               "Choisissez « Via les liquidités » ou diminuez les écarts.")
+clipped = [labels[k] for k in labels if abs(tact["eff"][k] - tilts_req[k]) > 1e-9 and not tact["scaled"]]
+if clipped:
+    st.info("ℹ️ Écart limité par la taille de la poche existante ou l'absence de proxy : "
+            + ", ".join(clipped))
+if proxy_notes:
+    st.warning("⚠️ Proxys indisponibles : " + " ; ".join(proxy_notes) +
+               ". Vérifiez OVERLAY_PROXIES dans factsheet_export.py.")
+
+expo_b = exposure_table(weights, max(0.0, 1.0 - weights.sum()), line_meta, 0.0)
+expo_s = exposure_table(w_strat, tact["cash"], line_meta, ov_hedge / 100)
+df_exp = pd.DataFrame({"Base": expo_b, "Tactique": expo_s})
+df_exp["Écart (pts)"] = df_exp["Tactique"] - df_exp["Base"]
+col_t, col_g = st.columns([1, 1])
+with col_t:
+    st.dataframe(df_exp.round(1), use_container_width=True)
+with col_g:
+    fig_exp = go.Figure()
+    fig_exp.add_trace(go.Bar(x=df_exp.index, y=df_exp["Base"], name="Base", marker_color="#9aa5b1"))
+    fig_exp.add_trace(go.Bar(x=df_exp.index, y=df_exp["Tactique"], name="Tactique", marker_color="#1f3a93"))
+    fig_exp.update_layout(barmode="group", template="plotly_white", height=360, yaxis_title="% actif net",
+                          margin=dict(t=30, b=10), legend=dict(orientation="h"))
+    st.plotly_chart(fig_exp, use_container_width=True)
+
+df_cmp = pd.DataFrame({"Portefeuille tactique": metrics_row(portfolio_index, port_ret),
+                       "Portefeuille de base": metrics_row(portfolio_index_base, port_ret_base),
+                       "Benchmark": metrics_row(bench_index, bench_ret)})
+st.dataframe(df_cmp.round(2), use_container_width=True)
+
+st.subheader("⚙️ Rebalancement et frais (stratégie)")
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Fréquence", rebal_label)
-c2.metric("Rebalancements", f"{sim_h['n_rebal']}")
-c3.metric("Rotation annualisée", f"{sim_h['turnover_ann'] * 100:.1f}%",
+c2.metric("Rebalancements", f"{sim_s['n_rebal']}")
+c3.metric("Rotation annualisée", f"{sim_s['turnover_ann'] * 100:.1f}%",
           help="Montants achetés + vendus rapportés à la valeur du portefeuille, annualisés.")
 c4.metric("Impact cumulé des frais", f"{cost_drag:.2f}%",
           help="Valeur nette de frais par rapport à la même stratégie sans frais.")
@@ -736,10 +973,12 @@ st.caption("Mise à jour automatique toutes les heures")
 # FACTSHEET PDF (FR + EN, 1 clic, données temps réel)
 # =====================
 render_factsheet_section(
-    portfolio_index_hedged, bench_index, port_ret_hedged,
-    allocation_eff, ticker_names, weights_now, prices_eur,
+    portfolio_index, bench_index, port_ret,
+    w_strat.to_dict(), TICKER_NAMES_ALL, weights_now, prices_eur_all,
     bench_weights=bench_weights_eff,
     excluded=excluded_names,
-    rebal=dict(freq=rebal_code, bps=cost_bps, n=sim_h["n_rebal"],
-               turnover=sim_h["turnover_ann"] * 100, drag=cost_drag),
+    rebal=dict(freq=rebal_code, bps=cost_bps, n=sim_s["n_rebal"],
+               turnover=sim_s["turnover_ann"] * 100, drag=cost_drag),
+    overlay=dict(active=overlay_active, hedge=float(ov_hedge),
+                 tilts={k: round(v * 100, 2) for k, v in tact["eff"].items()}),
 )
