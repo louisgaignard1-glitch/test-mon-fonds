@@ -1,5 +1,5 @@
 """
-factsheet_export.py - v8 (bilingue FR / EN)
+factsheet_export.py - v9 (bilingue FR / EN)
 -------------------------------------------
 Factsheet PDF 3 pages (style asset manager) generee a partir des donnees
 temps reel du portefeuille (prices_eur, indices, rendements) calculees par app.py.
@@ -16,6 +16,9 @@ Nouveautes v7
   - v8 : calendriers alignes par union + ffill (aucune date supprimee), parametre
     rebal (frequence de rebalancement, frais de transaction) affiche dans la
     factsheet ; RF est la source unique du taux sans risque (importee par app.py)
+  - v9 : overlay tactique (TAA) : OVERLAY_PROXIES (ETF obligataires / immobiliers, source
+    unique importee par app.py) et parametre overlay (ecarts tactiques et ratio de
+    couverture USD affiches dans la factsheet)
 
 Usage dans app.py :
     from factsheet_export import render_factsheet_section, normalize_index
@@ -86,6 +89,19 @@ FUND_META = {
     "0P0000WHLW.F": ("Actions", "Marches emergents", "EUR"),
 }
 
+# Proxys liquides de l'overlay tactique (ETF). Cle = ticker principal Yahoo ; fallbacks = autres
+# cotations essayees si le principal ne renvoie rien. A VERIFIER / ADAPTER (non testes sur Yahoo).
+OVERLAY_PROXIES = {
+    "EUNH.DE": dict(name="Euro Govt Bond ETF (EUNH)", sleeve="bond", cls="Credit & Obligations",
+                    region="Europe", ccy="EUR", fallbacks=["IEGA.AS"]),
+    "TLT":     dict(name="US Treasury 20+Y (TLT)", sleeve="bond", cls="Credit & Obligations",
+                    region="Amerique du Nord", ccy="USD", fallbacks=[]),
+    "IPRP.AS": dict(name="Euro Property ETF (IPRP)", sleeve="re", cls="Immobilier",
+                    region="Europe", ccy="EUR", fallbacks=[]),
+    "VNQ":     dict(name="US Real Estate (VNQ)", sleeve="re", cls="Immobilier",
+                    region="Amerique du Nord", ccy="USD", fallbacks=[]),
+}
+
 CLS_ORDER = ["Actions", "Credit & Obligations", "Alternatif", "Immobilier", "Liquidites"]
 REG_ORDER = ["Europe", "Amerique du Nord", "Marches emergents", "Liquidites"]
 
@@ -100,6 +116,9 @@ def line_meta(t: str) -> dict:
     if t in FUND_META:
         c, z, d = FUND_META[t]
         return dict(cls=c, region=z, sector="Fonds", ccy=d, kind="Fonds")
+    if t in OVERLAY_PROXIES:
+        m = OVERLAY_PROXIES[t]
+        return dict(cls=m["cls"], region=m["region"], sector="ETF", ccy=m["ccy"], kind="Overlay")
     return dict(cls="Actions", region="Europe", sector="Autre", ccy="EUR", kind="Direct")
 
 
@@ -159,6 +178,10 @@ TX = {
     "i_hor_v": ("5 ans", "5 years"),
     "i_hedge": ("Couverture USD", "USD hedge"),
     "i_hedge_v": ("Simulée (forward)", "Simulated (forward)"),
+    "i_hedge_ratio": ("Simulée, ratio {h} %", "Simulated, {h}% ratio"),
+    "i_overlay": ("Overlay tactique", "Tactical overlay"),
+    "ov_on": ("Actif", "Active"),
+    "ov_off": ("Neutre", "Neutral"),
     "i_rebal": ("Rebalancement", "Rebalancing"),
     "freq_D": ("Quotidien (théorique)", "Daily (theoretical)"),
     "freq_M": ("Mensuel", "Monthly"),
@@ -196,7 +219,8 @@ TX = {
     "sec_perf": ("ÉVOLUTION DE LA PERFORMANCE (BASE 100)", "PERFORMANCE EVOLUTION (BASE 100)"),
     "sec_cal": ("PERFORMANCES ANNUELLES CALENDAIRES", "CALENDAR YEAR PERFORMANCE"),
     "cal_note": ("* année en cours", "* year to date"),
-    "leg_port": ("Portefeuille (hedgé USD)", "Portfolio (USD hedged)"),
+    "leg_port": ("Portefeuille", "Portfolio"),
+    "leg_port_tact": ("Portefeuille (stratégie tactique)", "Portfolio (tactical strategy)"),
     "leg_port_s": ("Portefeuille", "Portfolio"),
     "leg_bench": ("Benchmark composite", "Composite benchmark"),
     "leg_bench_s": ("Benchmark", "Benchmark"),
@@ -245,7 +269,8 @@ TX = {
     "c_direct": ("Poche actions en direct", "Direct equity bucket"),
     "c_funds": ("Poche fonds", "Funds bucket"),
     "c_cash": ("Liquidités", "Cash"),
-    "c_usd": ("Exposition USD (couverte)", "USD exposure (hedged)"),
+    "c_usd": ("Exposition USD (brute)", "USD exposure (gross)"),
+    "c_overlay": ("Poche overlay (ETF)", "Overlay bucket (ETFs)"),
     "c_top5": ("5 premières lignes", "Top 5 holdings"),
     "c_top10": ("10 premières lignes", "Top 10 holdings"),
     "c_max": ("Poids max d'une ligne", "Largest holding"),
@@ -316,6 +341,15 @@ TX = {
                     "and transaction costs of {bps} bps on traded amounts"),
     "legal_rebal_none": ("avec des poids constants (rebalancement quotidien implicite)",
                          "using constant weights (implicit daily rebalancing)"),
+    "legal_overlay": (
+        "Overlay tactique : écarts par rapport au portefeuille de base, en points de % de l'actif net : "
+        "Actions Europe {eu}, Actions US {us}, Obligations d'État {bond}, Immobilier {re} ; ratio de "
+        "couverture USD/EUR de {h} %. Les expositions obligataires et immobilières additionnelles sont "
+        "investies via des ETF liquides (voir composition).",
+        "Tactical overlay: deviations from the base portfolio, in percentage points of net assets: "
+        "Europe equities {eu}, US equities {us}, government bonds {bond}, real estate {re}; USD/EUR hedge "
+        "ratio of {h}%. Additional bond and real estate exposure is implemented through liquid ETFs "
+        "(see composition)."),
     "excl_note": (
         "Lignes exclues faute de données exploitables : {names}. Leur poids a été réparti au prorata sur les "
         "autres lignes.",
@@ -352,6 +386,7 @@ DISP = {
     "Communication": ("Communication", "Communication"),
     "Fonds": ("Fonds", "Funds"),
     "Autre": ("Autre", "Other"),
+    "ETF": ("ETF", "ETF"),
 }
 
 
@@ -580,7 +615,8 @@ STAT_WINDOWS = [("1Y", 365), ("3Y", 3 * 365), ("5Y", 5 * 365), ("ITD", None)]
 
 
 def build_context(port_idx, bench_idx, prices_eur, allocation, ticker_names,
-                  weights, bench_weights, port_ret=None, excluded=None, rebal=None):
+                  weights, bench_weights, port_ret=None, excluded=None, rebal=None,
+                  overlay=None):
     # --- normalisation des index (tz, doublons, ordre) AVANT toute intersection
     port_idx = normalize_index(port_idx)
     bench_idx = normalize_index(bench_idx)
@@ -607,7 +643,7 @@ def build_context(port_idx, bench_idx, prices_eur, allocation, ticker_names,
     D = dict(port=port_idx, bench=bench_idx, rp=rp, rb=rb, first=first, last=last,
              days_total=days_total, prices=prices_eur, allocation=allocation,
              names=ticker_names, weights=weights, bench_weights=bench_weights or {},
-             excluded=list(excluded or []), rebal=rebal)
+             excluded=list(excluded or []), rebal=rebal, overlay=overlay)
     D["as_of"] = _date(last)
     D["today"] = _date(pd.Timestamp(datetime.datetime.now()), with_time=True)
     D["inception"] = _date(first)
@@ -750,7 +786,7 @@ def g_perf(D, w, h):
     fig, ax = _fig(w, h)
     ax.fill_between(p100.index, p100, 100, where=(p100 >= 100), color=C_PORT, alpha=0.08)
     ax.plot(b100.index, b100, color=C_BENCH, lw=1.2, label=T("leg_bench"))
-    ax.plot(p100.index, p100, color=C_PORT, lw=1.7, label=T("leg_port"))
+    ax.plot(p100.index, p100, color=C_PORT, lw=1.7, label=T("leg_port_tact") if (D.get("overlay") and D["overlay"]["active"]) else T("leg_port"))
     ax.axhline(100, color="#B8CDE4", lw=0.6)
     for s, col in ((p100, C_PORT), (b100, "#5A7490")):
         ax.annotate(f"{s.iloc[-1]:.0f}", xy=(s.index[-1], s.iloc[-1]), xytext=(3, 0),
@@ -1032,7 +1068,8 @@ def _page1(c, D):
         [T("i_univ"), T("i_univ_v")],
         [T("i_val"), T("i_val_v")],
         [T("i_hor"), T("i_hor_v")],
-        [T("i_hedge"), T("i_hedge_v")],
+        [T("i_hedge"), T("i_hedge_ratio", h=f"{D['overlay']['hedge']:.0f}") if D["overlay"] else T("i_hedge_v")],
+        [T("i_overlay"), T("ov_on") if (D["overlay"] and D["overlay"]["active"]) else T("ov_off")],
         [T("i_rebal"), T("freq_" + D["rebal"]["freq"]) if D["rebal"] else T("freq_D")],
         [T("i_fees"), T("i_fees_v", b=f"{D['rebal']['bps']:g}") if D["rebal"] else "n/a"],
         [T("i_nl"), str(D["n_lines"])],
@@ -1180,6 +1217,7 @@ def _page2(c, D):
     L = D["lines"]
     direct = sum(x["w"] for x in L if x["kind"] == "Direct")
     funds = sum(x["w"] for x in L if x["kind"] == "Fonds")
+    overlay_w = sum(x["w"] for x in L if x["kind"] == "Overlay")
     usd = sum(x["w"] for x in L if x["ccy"] == "USD")
     top5 = sum(x["w"] for x in L[:5])
     top10 = sum(x["w"] for x in L[:10])
@@ -1187,6 +1225,7 @@ def _page2(c, D):
     rows = [
         [T("c_direct"), fpl(direct, 1)],
         [T("c_funds"), fpl(funds, 1)],
+        [T("c_overlay"), fpl(overlay_w, 1)],
         [T("c_cash"), fpl(D["cash"] * 100, 1)],
         [T("c_usd"), fpl(usd, 1)],
         [T("c_top5"), fpl(top5, 1)],
@@ -1304,8 +1343,15 @@ def _page3(c, D):
                       bps=f"{D['rebal']['bps']:g}")
     else:
         rebal_txt = T("legal_rebal_none")
-    y = _para(c, ML, y, T("legal", rf=fpl(RF * 100, 1), rebal=rebal_txt), CW, 5.4, 6.8,
-              P_MUTED, "Helvetica-Oblique")
+    legal = T("legal", rf=fpl(RF * 100, 1), rebal=rebal_txt)
+    ov = D["overlay"]
+    if ov and ov["active"]:
+        tl = ov["tilts"]
+        def _pt(v):
+            return f"{v:+.1f}".replace(".", ",") if _is_fr() else f"{v:+.1f}"
+        legal += " " + T("legal_overlay", eu=_pt(tl["eq_eu"]), us=_pt(tl["eq_us"]),
+                         bond=_pt(tl["bond"]), re=_pt(tl["re"]), h=f"{ov['hedge']:.0f}")
+    y = _para(c, ML, y, legal, CW, 5.4, 6.8, P_MUTED, "Helvetica-Oblique")
     if D["excluded"]:
         y -= 1.2 * mm
         _para(c, ML, y, T("excl_note", names=", ".join(D["excluded"])), CW, 5.4, 6.8,
@@ -1317,14 +1363,15 @@ def _page3(c, D):
 # ═════════════════════════════════════════════════════════
 def generate_factsheet_pdf(port_idx, bench_idx, port_ret, allocation, ticker_names,
                            weights, prices_eur=None, bench_weights=None,
-                           lang="fr", excluded=None, rebal=None) -> bytes:
+                           lang="fr", excluded=None, rebal=None,
+                           overlay=None) -> bytes:
     """Genere la factsheet. lang : "fr" (defaut) ou "en"."""
     lang = "en" if str(lang).lower().startswith("en") else "fr"
     previous = getattr(_L, "lang", None)
     _L.lang = lang
     try:
         D = build_context(port_idx, bench_idx, prices_eur, allocation, ticker_names,
-                          weights, bench_weights, port_ret, excluded, rebal)
+                          weights, bench_weights, port_ret, excluded, rebal, overlay)
         buf = io.BytesIO()
         c = rl_canvas.Canvas(buf, pagesize=A4)
         c.setTitle(f"Factsheet - {D['as_of']}")
@@ -1348,18 +1395,18 @@ def _build_cached(cache_key: str, lang: str, _payload: dict) -> bytes:
 
 def render_factsheet_section(port_idx, bench_idx, port_ret, allocation, ticker_names,
                              weights, prices_eur=None, bench_weights=None, excluded=None,
-                             rebal=None):
+                             rebal=None, overlay=None):
     """Deux boutons de telechargement (FR / EN). PDF generes en 1 clic, mis en cache 15 min."""
     st.divider()
     st.subheader(f"{TX['ui_title'][0]} / {TX['ui_title'][1]}")
     payload = dict(port_idx=port_idx, bench_idx=bench_idx, port_ret=port_ret,
                    allocation=allocation, ticker_names=ticker_names, weights=weights,
                    prices_eur=prices_eur, bench_weights=bench_weights, excluded=excluded,
-                   rebal=rebal)
+                   rebal=rebal, overlay=overlay)
     w_sig = ",".join(f"{t}:{float(w):.6f}" for t, w in weights.items())
     base_key = (f"{port_idx.index[-1]:%Y%m%d}-{float(port_idx.iloc[-1]):.6f}-{len(port_idx)}-"
                 f"{hash(w_sig)}-{'|'.join(excluded or [])}-"
-                f"{sorted((rebal or {}).items())}")
+                f"{sorted((rebal or {}).items())}-{sorted((overlay or {}).items(), key=str)}")
     today = datetime.date.today()
     col_fr, col_en = st.columns(2)
     for col, lang, label, bkey in (
